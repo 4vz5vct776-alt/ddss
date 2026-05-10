@@ -8,10 +8,9 @@ POLYMARKET_CLOB_URL = "https://clob.polymarket.com"
 # Polymarket Gamma API (获取市场列表)
 POLYMARKET_GAMMA_URL = "https://gamma-api.polymarket.com"
 
-# 你要监控的 Polymarket 市场 token_id (条件代币ID)
-# 示例: 在 Polymarket 某个市场页面可以找到 clob_token_ids
-# YES token 和 NO token 各有一个 ID
-POLYMARKET_TOKEN_ID = "YOUR_POLYMARKET_TOKEN_ID_HERE"
+# 你要监控的 Polymarket 市场 token_id
+# Knicks(尼克斯)赢的 Token ID
+POLYMARKET_TOKEN_ID = "55297441786017085969636905582063725290032450865351029055580704018493906917875"
 
 # ============ Predict.fun 配置 ============
 # Predict.fun API
@@ -28,16 +27,24 @@ PREDICT_MARKET_ID = "YOUR_PREDICT_MARKET_ID_HERE"
 # 每次挂单的数量 (USDB)
 ORDER_SIZE = 10.0
 
-# 盘口价格变化阈值 (超过这个差值才触发挂单/撤单)
-# 例如 0.01 表示价格变化超过 1 分钱才操作
-PRICE_CHANGE_THRESHOLD = 0.01
-
-# 轮询间隔 (秒)
-POLL_INTERVAL = 5
-
 # 挂单方向: "buy" 或 "sell"
 ORDER_SIDE = "buy"
 
+# 轮询间隔 (秒) - 多久检查一次盘口
+POLL_INTERVAL = 3
+
+# ============ 撤单保护参数 ============
+# 买1数量减少超过多少比例就撤单 (0.5 = 减少50%)
+# 例如: 买1原来挂了1000张, 突然变成400张(减少60%), 就触发撤单
+BID1_DROP_PERCENT = 0.5
+
+# 买1数量低于这个值就撤单 (绝对值)
+# 例如: 买1只剩下50张，太薄了，撤单保护
+BID1_MIN_SIZE = 50.0
+
+# 盘口恢复后等待多少秒再重新挂单
+# 防止反复触发，等稳定了再挂
+RECOVER_WAIT_TIME = 10
+
 # 是否跟随 Polymarket 的 best bid
-# True = 跟随 best bid (买方), False = 跟随 best ask (卖方)
 FOLLOW_BID = True

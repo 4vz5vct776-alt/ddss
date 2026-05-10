@@ -1,11 +1,15 @@
 """
-主程序 - Polymarket 盘口跟随 Bot
-功能: 监控 Polymarket 盘口变化, 自动在 Predict.fun 上挂单/撤单
+盘口监控 Bot - 防砸盘撤单策略
+功能:
+  - 监控 Polymarket 买1 和 Predict.fun 买1
+  - 如果买1突然撤单或大量减少 → 立刻撤掉自己的挂单，等待
+  - 如果买1恢复正常 → 重新挂单
 
-使用:
-1. 编辑 config.py 填入配置
-2. pip install requests
-3. python bot.py
+逻辑:
+  1. 记录上一次的买1挂单量
+  2. 每次检查时对比: 新买1量 vs 旧买1量
+  3. 如果减少超过阈值(比如减少50%) → 触发撤单保护
+  4. 如果恢复正常 → 重新挂单
 """
 
 import time
@@ -14,11 +18,13 @@ import signal
 
 from config import (
     POLYMARKET_TOKEN_ID,
-    PRICE_CHANGE_THRESHOLD,
     POLL_INTERVAL,
     ORDER_SIZE,
     ORDER_SIDE,
-    FOLLOW_BID,
+    # 新增配置
+    BID1_DROP_PERCENT,
+    BID1_MIN_SIZE,
+    RECOVER_WAIT_TIME,
 )
 from polymarket_monitor import get_orderbook
 from predict_trader import PredictTrader
@@ -31,7 +37,6 @@ logging.basicConfig(
 logger = logging.getLogger(__name__)
 
 running = True
-last_price = None
 
 
 def signal_handler(sig, frame):
@@ -44,21 +49,115 @@ signal.signal(signal.SIGINT, signal_handler)
 signal.signal(signal.SIGTERM, signal_handler)
 
 
+class OrderbookWatcher:
+    """盘口监控器 - 检测买1是否突然撤单/大幅减少"""
+
+    def __init__(self):
+        self.last_bid1_size = None  # 上一次买1的挂单量
+        self.last_bid1_price = None  # 上一次买1的价格
+        self.is_dangerous = False  # 当前是否处于危险状态
+
+    def check_bid1(self, orderbook):
+        """
+        检查买1是否突然撤单或大量减少
+
+        返回:
+            "DANGER" - 买1突然减少，需要撤单
+            "SAFE" - 买1正常
+            "RECOVERING" - 之前危险，现在恢复中
+        """
+        bids = orderbook.get("bids", [])
+        if not bids:
+            return "DANGER"
+
+        # 当前买1的价格和数量
+        current_bid1_price = float(bids[0]["price"])
+        current_bid1_size = float(bids[0]["size"])
+
+        # 第一次运行，记录数据
+        if self.last_bid1_size is None:
+            self.last_bid1_size = current_bid1_size
+            self.last_bid1_price = current_bid1_price
+            logger.info(
+                f"初始买1: 价格={current_bid1_price:.4f}, "
+                f"数量={current_bid1_size:.2f}"
+            )
+            return "SAFE"
+
+        # 检测1: 买1数量突然大幅减少
+        if self.last_bid1_size > 0:
+            drop_ratio = (
+                (self.last_bid1_size - current_bid1_size)
+                / self.last_bid1_size
+            )
+        else:
+            drop_ratio = 0
+
+        # 检测2: 买1数量低于最小安全值
+        too_small = current_bid1_size < BID1_MIN_SIZE
+
+        # 检测3: 买1价格突然下降（被砸穿）
+        price_dropped = (
+            self.last_bid1_price is not None
+            and current_bid1_price < self.last_bid1_price - 0.02
+        )
+
+        # 判断是否危险
+        is_danger_now = (
+            drop_ratio >= BID1_DROP_PERCENT  # 买1减少超过阈值
+            or too_small  # 买1量太小
+            or price_dropped  # 价格被砸穿
+        )
+
+        if is_danger_now:
+            logger.warning(
+                f"⚠️ 危险信号! "
+                f"买1: {self.last_bid1_size:.2f} → {current_bid1_size:.2f} "
+                f"(减少{drop_ratio*100:.1f}%), "
+                f"价格: {self.last_bid1_price:.4f} → {current_bid1_price:.4f}"
+            )
+            self.is_dangerous = True
+            self.last_bid1_size = current_bid1_size
+            self.last_bid1_price = current_bid1_price
+            return "DANGER"
+
+        elif self.is_dangerous:
+            # 之前是危险状态，现在恢复了
+            logger.info(
+                f"✅ 盘口恢复! "
+                f"买1: 价格={current_bid1_price:.4f}, "
+                f"数量={current_bid1_size:.2f}"
+            )
+            self.is_dangerous = False
+            self.last_bid1_size = current_bid1_size
+            self.last_bid1_price = current_bid1_price
+            return "RECOVERING"
+
+        else:
+            # 正常状态
+            self.last_bid1_size = current_bid1_size
+            self.last_bid1_price = current_bid1_price
+            return "SAFE"
+
+
 def run_bot():
-    global last_price, running
+    global running
 
     logger.info("=" * 50)
-    logger.info("Polymarket -> Predict.fun 盘口跟随 Bot 启动")
+    logger.info("盘口监控 Bot - 防砸盘撤单策略")
     logger.info("=" * 50)
-    logger.info(f"监控 token: {POLYMARKET_TOKEN_ID}")
-    logger.info(f"方向: {ORDER_SIDE}, 数量: {ORDER_SIZE}")
-    logger.info(f"价格阈值: {PRICE_CHANGE_THRESHOLD}")
+    logger.info(f"监控 token: {POLYMARKET_TOKEN_ID[:30]}...")
+    logger.info(f"买1减少超过 {BID1_DROP_PERCENT*100:.0f}% → 撤单")
+    logger.info(f"买1数量低于 {BID1_MIN_SIZE} → 撤单")
+    logger.info(f"挂单参数: {ORDER_SIDE} x {ORDER_SIZE}")
     logger.info(f"轮询间隔: {POLL_INTERVAL}秒")
-    logger.info(f"跟随: {'best_bid' if FOLLOW_BID else 'best_ask'}")
+    logger.info(f"恢复等待: {RECOVER_WAIT_TIME}秒")
     logger.info("=" * 50)
 
     trader = PredictTrader()
-    trader.get_open_orders()
+    watcher = OrderbookWatcher()
+    has_active_order = False
+    recover_time = 0
 
     while running:
         try:
@@ -69,40 +168,53 @@ def run_bot():
                 time.sleep(POLL_INTERVAL)
                 continue
 
-            # 2. 计算目标价格
-            if FOLLOW_BID:
-                target_price = orderbook["best_bid"]
-            else:
-                target_price = orderbook["best_ask"]
+            # 2. 检查买1状态
+            status = watcher.check_bid1(orderbook)
 
-            # 3. 判断价格是否变化超过阈值
-            price_diff = abs(target_price - last_price) if last_price else 999
-            if price_diff >= PRICE_CHANGE_THRESHOLD:
-                logger.info(
-                    f"盘口变化! 旧={last_price}, 新={target_price:.4f}"
-                )
-
-                # 4. 撤旧单
-                if trader.active_orders:
-                    logger.info("撤销旧订单...")
+            if status == "DANGER":
+                # ===== 危险! 立刻撤单 =====
+                if has_active_order:
+                    logger.warning("🚨 检测到买1撤单/大幅减少，立刻撤单!")
                     trader.cancel_all_orders()
-
-                # 5. 挂新单
-                logger.info(
-                    f"挂新单: {ORDER_SIDE} @ {target_price:.4f} x {ORDER_SIZE}"
-                )
-                result = trader.create_order(
-                    side=ORDER_SIDE,
-                    price=target_price,
-                    size=ORDER_SIZE,
-                )
-                if result:
-                    last_price = target_price
-                    logger.info("挂单成功!")
+                    has_active_order = False
+                    logger.info("已撤单，进入等待观望状态...")
                 else:
-                    logger.error("挂单失败")
-            else:
-                logger.debug(f"价格无变化 ({target_price:.4f}), 保持")
+                    logger.info("已在观望中，继续等待...")
+
+            elif status == "RECOVERING":
+                # ===== 恢复中，等一会再挂单 =====
+                logger.info(f"盘口恢复，等待 {RECOVER_WAIT_TIME} 秒确认安全...")
+                recover_time = time.time()
+
+            elif status == "SAFE":
+                # ===== 安全，可以挂单 =====
+                if not has_active_order:
+                    # 如果刚从恢复状态来，要等待一段时间
+                    if recover_time > 0:
+                        elapsed = time.time() - recover_time
+                        if elapsed < RECOVER_WAIT_TIME:
+                            logger.debug(
+                                f"恢复等待中... "
+                                f"还剩{RECOVER_WAIT_TIME - elapsed:.0f}秒"
+                            )
+                            time.sleep(POLL_INTERVAL)
+                            continue
+                        recover_time = 0
+
+                    # 用当前买1价格挂单
+                    bid1_price = orderbook["best_bid"]
+                    logger.info(
+                        f"✅ 盘口安全，挂单: "
+                        f"{ORDER_SIDE} @ {bid1_price:.4f} x {ORDER_SIZE}"
+                    )
+                    result = trader.create_order(
+                        side=ORDER_SIDE,
+                        price=bid1_price,
+                        size=ORDER_SIZE,
+                    )
+                    if result:
+                        has_active_order = True
+                        logger.info("挂单成功!")
 
         except Exception as e:
             logger.error(f"异常: {e}", exc_info=True)
