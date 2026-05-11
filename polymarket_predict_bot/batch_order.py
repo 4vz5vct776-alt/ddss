@@ -3,7 +3,8 @@
 功能:
   - 获取所有有星星(有奖励积分)的市场
   - 跳过已经开始/进行中的比赛
-  - 每个市场以买1价格挂10份额
+  - 跳过已有活跃挂单的市场 (防重复挂)
+  - 每个市场以买1价格 - 1tick 挂单 (防吃单, 确保maker)
   - 总预算控制30U
 
 使用:
@@ -28,6 +29,9 @@ try:
     from config import PREDICT_JWT_TOKEN
 except ImportError:
     PREDICT_JWT_TOKEN = ""
+
+# Maker保护: 挂单价格 = 买1 - TICK_SIZE, 确保不会吃单
+TICK_SIZE = 0.001
 
 logging.basicConfig(
     level=logging.INFO,
@@ -134,6 +138,40 @@ class PredictBatchTrader:
             return current is not None or len(schedule) > 0
         return True
 
+    def get_open_orders(self):
+        """
+        获取当前所有未成交的挂单
+        返回: {market_id: [orders]} 的字典, 用于去重
+        """
+        url = f"{self.base_url}/v1/orders"
+        params = {"status": "OPEN", "first": 100}
+
+        try:
+            resp = self.order_session.get(url, params=params, timeout=10)
+            resp.raise_for_status()
+            data = resp.json()
+            orders = data.get("data", [])
+            if not orders:
+                orders = data if isinstance(data, list) else []
+
+            # 按 marketId 分组
+            orders_by_market = {}
+            for o in orders:
+                mid = (
+                    o.get("marketId")
+                    or o.get("market_id")
+                    or (o.get("order", {}) or {}).get("marketId")
+                )
+                if mid:
+                    orders_by_market.setdefault(mid, []).append(o)
+
+            logger.info(f"当前有 {len(orders)} 笔活跃挂单, 覆盖 {len(orders_by_market)} 个市场")
+            return orders_by_market
+
+        except requests.exceptions.RequestException as e:
+            logger.error(f"获取活跃订单失败: {e}")
+            return {}
+
     def get_market_orderbook(self, market_id):
         """
         获取指定市场的盘口
@@ -211,18 +249,23 @@ class PredictBatchTrader:
         批量挂单:
         - 只挂有星星的市场
         - 跳过已开始的比赛
-        - 每个市场买1挂10份额
+        - 跳过已有活跃挂单的市场 (防重复)
+        - 挂单价格 = 买1 - 1tick (防吃单, 确保maker)
         - 总预算30U
         """
         logger.info("=" * 50)
-        logger.info("Predict.fun 批量挂单 (30U 测试)")
+        logger.info("Predict.fun 批量挂单 (防重复 + 防吃单)")
         logger.info(f"每笔份额: {ORDER_SIZE}")
         logger.info(f"总预算: {TOTAL_BUDGET} USDB")
         logger.info(f"只挂有星星的: {ONLY_WITH_REWARDS}")
         logger.info(f"跳过进行中: {SKIP_LIVE_EVENTS}")
+        logger.info(f"Maker保护: 买1 - {TICK_SIZE} (防吃单)")
         logger.info("=" * 50)
 
-        # 1. 获取市场
+        # 1. 获取当前活跃挂单 (用于去重)
+        existing_orders = self.get_open_orders()
+
+        # 2. 获取市场
         markets = self.get_markets()
         if not markets:
             logger.error("没有找到可交易的市场!")
@@ -231,8 +274,9 @@ class PredictBatchTrader:
         success_count = 0
         fail_count = 0
         skip_count = 0
+        dedup_count = 0
 
-        # 2. 逐个市场处理
+        # 3. 逐个市场处理
         for i, market in enumerate(markets, 1):
             # 检查预算
             if self.total_spent >= TOTAL_BUDGET:
@@ -257,6 +301,12 @@ class PredictBatchTrader:
                 skip_count += 1
                 continue
 
+            # 过滤: 跳过已有活跃挂单的市场 (防重复挂单)
+            if market_id and market_id in existing_orders:
+                logger.info(f"[{i}] 🔁 跳过(已有挂单): {market_name}")
+                dedup_count += 1
+                continue
+
             logger.info(f"\n[{i}] {market_name}")
 
             # 获取盘口
@@ -270,17 +320,26 @@ class PredictBatchTrader:
             bid1_size = book["bid1_size"]
             logger.info(f"  买1: {bid1_price:.4f} (量={bid1_size:.2f})")
 
-            # 计算这笔单花多少钱
-            cost = bid1_price * ORDER_SIZE
+            # ===== 防吃单: 挂单价格 = 买1 - 1 tick =====
+            # 这样确保我们的订单在买1后面排队, 不会立刻成交变成taker
+            order_price = round(bid1_price - TICK_SIZE, 4)
+            if order_price <= 0:
+                logger.warning(f"  跳过: 买1价格太低, 减tick后<=0")
+                skip_count += 1
+                continue
+            logger.info(f"  挂单价: {order_price:.4f} (买1 - {TICK_SIZE}, maker保护)")
+
+            # 计算这笔单花多少钱 (用实际挂单价格计算)
+            cost = order_price * ORDER_SIZE
             if self.total_spent + cost > TOTAL_BUDGET:
                 logger.info(f"  跳过: 预算不足 (剩余{TOTAL_BUDGET - self.total_spent:.2f})")
                 break
 
-            # 挂单
+            # 挂单 (用 order_price 而非 bid1_price)
             result = self.create_order(
                 market_id=market_id,
                 side="BUY",
-                price=bid1_price,
+                price=order_price,
                 size=ORDER_SIZE,
             )
 
@@ -294,12 +353,13 @@ class PredictBatchTrader:
             # 控制速度
             time.sleep(0.5)
 
-        # 3. 汇总
+        # 4. 汇总
         logger.info("\n" + "=" * 50)
         logger.info(f"批量挂单完成!")
         logger.info(f"✅ 成功: {success_count} 笔")
         logger.info(f"❌ 失败: {fail_count} 笔")
         logger.info(f"⏭️ 跳过: {skip_count} 笔")
+        logger.info(f"🔁 去重跳过: {dedup_count} 笔")
         logger.info(f"💰 总花费: {self.total_spent:.2f} USDB")
         logger.info("=" * 50)
 
