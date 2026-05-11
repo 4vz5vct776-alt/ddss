@@ -1,24 +1,27 @@
 """
-批量快速挂单脚本 - Predict.fun 所有热门(星星)市场
+批量快速挂单脚本 - Predict.fun 有星星的市场
 功能:
-  - 自动获取 Predict.fun 上所有带星星(热门/精选)的市场
-  - 获取每个市场的买1价格
-  - 以买1价格快速挂单
+  - 获取所有有星星(有奖励积分)的市场
+  - 跳过已经开始/进行中的比赛
+  - 每个市场以买1价格挂10份额
+  - 总预算控制30U
 
 使用:
   python3 batch_order.py
-
-API 参考:
-  - GET /v1/markets - 获取市场列表
-  - GET /v1/markets/{id}/orderbook - 获取盘口
-  - POST /v1/orders - 创建订单
 """
 
 import requests
 import logging
 import time
 
-from config import PREDICT_API_URL, PREDICT_API_KEY, ORDER_SIZE
+from config import (
+    PREDICT_API_URL,
+    PREDICT_API_KEY,
+    ORDER_SIZE,
+    TOTAL_BUDGET,
+    ONLY_WITH_REWARDS,
+    SKIP_LIVE_EVENTS,
+)
 
 logging.basicConfig(
     level=logging.INFO,
@@ -39,27 +42,23 @@ class PredictBatchTrader:
             "Content-Type": "application/json",
             "x-api-key": PREDICT_API_KEY,
         })
+        self.total_spent = 0.0
 
-    def get_featured_markets(self):
+    def get_markets(self):
         """
-        获取带星星(热门/精选)的市场
-        API: GET /v1/markets?status=TRADING
-        注意: 获取市场列表不需要认证，用公开session
+        获取市场列表
+        API: GET /v1/markets
         """
         url = f"{self.base_url}/v1/markets"
         params = {
             "status": "OPEN",
-            "first": 50,
-            "hasActiveRewards": "true",
+            "first": 100,
         }
+        if ONLY_WITH_REWARDS:
+            params["hasActiveRewards"] = "true"
 
         try:
             resp = self.session.get(url, params=params, timeout=10)
-            if resp.status_code == 401:
-                # 尝试不带status参数
-                resp = self.session.get(
-                    url, params={"first": 50}, timeout=10
-                )
             resp.raise_for_status()
             data = resp.json()
 
@@ -67,27 +66,8 @@ class PredictBatchTrader:
             if not markets:
                 markets = data if isinstance(data, list) else []
 
-            # 过滤有星星/精选的市场 (featured/starred)
-            # Predict.fun 热门市场通常有 featured 或 rewards 标记
-            featured = []
-            for m in markets:
-                # 尝试多种方式判断是否为热门市场
-                is_featured = (
-                    m.get("featured", False)
-                    or m.get("isFeatured", False)
-                    or m.get("rewardEarningRate", 0) > 0
-                    or m.get("rewards") is not None
-                )
-                if is_featured:
-                    featured.append(m)
-
-            # 如果过滤后为空，返回所有正在交易的市场
-            if not featured:
-                logger.info("未找到特别标记的热门市场，使用所有活跃市场")
-                featured = markets
-
-            logger.info(f"获取到 {len(featured)} 个热门市场")
-            return featured
+            logger.info(f"获取到 {len(markets)} 个市场")
+            return markets
 
         except requests.exceptions.RequestException as e:
             logger.error(f"获取市场列表失败: {e}")
@@ -95,11 +75,55 @@ class PredictBatchTrader:
                 logger.error(f"响应: {e.response.text}")
             return []
 
+    def is_live_event(self, market):
+        """
+        判断市场是否已经开始/进行中
+        跳过正在比赛中的事件
+        """
+        # 检查 tradingStatus
+        trading_status = market.get("tradingStatus", "")
+        if isinstance(trading_status, dict):
+            trading_status = trading_status.get("status", "")
+
+        # 常见的进行中状态
+        live_statuses = ["LIVE", "IN_PROGRESS", "STARTED", "HALTED"]
+        if str(trading_status).upper() in live_statuses:
+            return True
+
+        # 检查 marketVariant 中的比赛信息
+        variant = market.get("marketVariant", {})
+        if isinstance(variant, dict):
+            variant_type = variant.get("type", "")
+            if variant_type in ["SPORTS_MATCH", "SPORTS_TEAM_MATCH"]:
+                # 体育比赛，检查是否已开始
+                variant_data = market.get("variantData", {})
+                if isinstance(variant_data, dict):
+                    status = variant_data.get("matchStatus", "")
+                    if status.upper() in live_statuses:
+                        return True
+
+        # 检查标题中是否有 "LIVE" 标记
+        title = market.get("title", "") or market.get("question", "")
+        if "[LIVE]" in title or "(LIVE)" in title:
+            return True
+
+        return False
+
+    def has_rewards(self, market):
+        """判断市场是否有星星(奖励积分)"""
+        rewards = market.get("rewards")
+        if rewards is None:
+            return False
+        if isinstance(rewards, dict):
+            current = rewards.get("current")
+            schedule = rewards.get("schedule", [])
+            return current is not None or len(schedule) > 0
+        return True
+
     def get_market_orderbook(self, market_id):
         """
         获取指定市场的盘口
         API: GET /v1/markets/{id}/orderbook
-        返回买1价格和数量
         """
         url = f"{self.base_url}/v1/markets/{market_id}/orderbook"
 
@@ -112,13 +136,11 @@ class PredictBatchTrader:
             bids = orderbook.get("bids", [])
 
             if bids:
-                # bids 可能是 [{"price": x, "size": y}] 或 [[price, size], ...]
                 first_bid = bids[0]
                 if isinstance(first_bid, dict):
                     bid1_price = float(first_bid.get("price", 0))
                     bid1_size = float(first_bid.get("size", 0))
                 elif isinstance(first_bid, list):
-                    # 格式: [price, size]
                     bid1_price = float(first_bid[0])
                     bid1_size = float(first_bid[1]) if len(first_bid) > 1 else 0
                 else:
@@ -137,7 +159,7 @@ class PredictBatchTrader:
             logger.error(f"获取盘口失败 (market_id={market_id}): {e}")
             return None
         except (IndexError, ValueError, TypeError) as e:
-            logger.error(f"解析盘口数据失败 (market_id={market_id}): {e}")
+            logger.error(f"解析盘口失败 (market_id={market_id}): {e}")
             return None
 
     def create_order(self, market_id, side, price, size):
@@ -160,38 +182,48 @@ class PredictBatchTrader:
             resp.raise_for_status()
             order = resp.json()
             logger.info(
-                f"  ✅ 挂单成功: market={market_id}, "
-                f"{side} @ {price:.4f} x {size}"
+                f"  ✅ 挂单成功: {side} @ {price:.4f} x {size}"
             )
             return order
         except requests.exceptions.RequestException as e:
-            logger.error(f"  ❌ 挂单失败 (market={market_id}): {e}")
+            logger.error(f"  ❌ 挂单失败: {e}")
             if hasattr(e, "response") and e.response is not None:
                 logger.error(f"  响应: {e.response.text}")
             return None
 
-    def batch_place_orders(self, order_size=None):
+    def batch_place_orders(self):
         """
-        批量挂单: 获取所有热门市场 → 获取买1 → 以买1价格挂单
+        批量挂单:
+        - 只挂有星星的市场
+        - 跳过已开始的比赛
+        - 每个市场买1挂10份额
+        - 总预算30U
         """
-        size = order_size or ORDER_SIZE
-
         logger.info("=" * 50)
-        logger.info("Predict.fun 批量快速挂单")
-        logger.info(f"每笔金额: {size} USDB")
+        logger.info("Predict.fun 批量挂单 (30U 测试)")
+        logger.info(f"每笔份额: {ORDER_SIZE}")
+        logger.info(f"总预算: {TOTAL_BUDGET} USDB")
+        logger.info(f"只挂有星星的: {ONLY_WITH_REWARDS}")
+        logger.info(f"跳过进行中: {SKIP_LIVE_EVENTS}")
         logger.info("=" * 50)
 
-        # 1. 获取热门市场
-        markets = self.get_featured_markets()
+        # 1. 获取市场
+        markets = self.get_markets()
         if not markets:
             logger.error("没有找到可交易的市场!")
             return
 
         success_count = 0
         fail_count = 0
+        skip_count = 0
 
-        # 2. 逐个市场挂单
+        # 2. 逐个市场处理
         for i, market in enumerate(markets, 1):
+            # 检查预算
+            if self.total_spent >= TOTAL_BUDGET:
+                logger.info(f"\n💰 已达到预算上限 {TOTAL_BUDGET} USDB，停止挂单")
+                break
+
             market_id = market.get("id") or market.get("marketId")
             market_name = (
                 market.get("title")
@@ -200,54 +232,66 @@ class PredictBatchTrader:
                 or f"Market #{market_id}"
             )
 
-            logger.info(f"\n[{i}/{len(markets)}] {market_name}")
+            # 过滤: 只挂有星星的
+            if ONLY_WITH_REWARDS and not self.has_rewards(market):
+                continue
+
+            # 过滤: 跳过已开始的比赛
+            if SKIP_LIVE_EVENTS and self.is_live_event(market):
+                logger.info(f"[{i}] ⏭️ 跳过(进行中): {market_name}")
+                skip_count += 1
+                continue
+
+            logger.info(f"\n[{i}] {market_name}")
 
             # 获取盘口
             book = self.get_market_orderbook(market_id)
             if book is None or book["bid1_price"] <= 0:
                 logger.warning(f"  跳过: 没有买盘")
-                fail_count += 1
+                skip_count += 1
                 continue
 
             bid1_price = book["bid1_price"]
-            logger.info(
-                f"  买1: {bid1_price:.4f} (量={book['bid1_size']:.2f})"
-            )
+            bid1_size = book["bid1_size"]
+            logger.info(f"  买1: {bid1_price:.4f} (量={bid1_size:.2f})")
 
-            # 以买1价格挂买单
+            # 计算这笔单花多少钱
+            cost = bid1_price * ORDER_SIZE
+            if self.total_spent + cost > TOTAL_BUDGET:
+                logger.info(f"  跳过: 预算不足 (剩余{TOTAL_BUDGET - self.total_spent:.2f})")
+                break
+
+            # 挂单
             result = self.create_order(
                 market_id=market_id,
                 side="BUY",
                 price=bid1_price,
-                size=size,
+                size=ORDER_SIZE,
             )
 
             if result:
                 success_count += 1
+                self.total_spent += cost
+                logger.info(f"  花费: {cost:.2f} USDB (累计: {self.total_spent:.2f}/{TOTAL_BUDGET})")
             else:
                 fail_count += 1
 
-            # 控制速度，避免触发频率限制
+            # 控制速度
             time.sleep(0.5)
 
         # 3. 汇总
         logger.info("\n" + "=" * 50)
         logger.info(f"批量挂单完成!")
-        logger.info(f"成功: {success_count} 笔")
-        logger.info(f"失败: {fail_count} 笔")
+        logger.info(f"✅ 成功: {success_count} 笔")
+        logger.info(f"❌ 失败: {fail_count} 笔")
+        logger.info(f"⏭️ 跳过: {skip_count} 笔")
+        logger.info(f"💰 总花费: {self.total_spent:.2f} USDB")
         logger.info("=" * 50)
 
 
 def main():
     if PREDICT_API_KEY == "YOUR_PREDICT_FUN_JWT_TOKEN_HERE":
-        print("\n" + "=" * 50)
-        print("⚠️  请先配置 config.py 中的 PREDICT_API_KEY!")
-        print("")
-        print("步骤:")
-        print("1. 去 https://predict.fun/ 连接钱包登录")
-        print("2. 去 https://dev.predict.fun/ 获取 JWT Token")
-        print("3. 打开 config.py, 把 PREDICT_API_KEY 改成你的 Token")
-        print("=" * 50)
+        print("\n⚠️  请先配置 config.py 中的 PREDICT_API_KEY!")
         return
 
     trader = PredictBatchTrader()

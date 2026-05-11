@@ -24,7 +24,10 @@ PREDICT_API_KEY = "YOUR_PREDICT_FUN_JWT_TOKEN_HERE"
 PREDICT_MARKET_ID = "YOUR_PREDICT_MARKET_ID_HERE"
 
 # ============ 交易参数 ============
-# 每次挂单的数量 (USDB)
+# 总预算 (USDB) - 所有市场加起来不超过这个金额
+TOTAL_BUDGET = 30.0
+
+# 每个市场挂单的份额数
 ORDER_SIZE = 10.0
 
 # 挂单方向: "buy" 或 "sell"
@@ -33,17 +36,21 @@ ORDER_SIDE = "buy"
 # 轮询间隔 (秒) - 多久检查一次盘口
 POLL_INTERVAL = 3
 
+# ============ 过滤参数 ============
+# 只挂有星星(有奖励)的市场
+ONLY_WITH_REWARDS = True
+
+# 跳过已经开始/进行中的比赛
+SKIP_LIVE_EVENTS = True
+
 # ============ 撤单保护参数 ============
 # 买1数量减少超过多少比例就撤单 (0.5 = 减少50%)
-# 例如: 买1原来挂了1000张, 突然变成400张(减少60%), 就触发撤单
 BID1_DROP_PERCENT = 0.5
 
 # 买1数量低于这个值就撤单 (绝对值)
-# 例如: 买1只剩下50张，太薄了，撤单保护
 BID1_MIN_SIZE = 50.0
 
 # 盘口恢复后等待多少秒再重新挂单
-# 防止反复触发，等稳定了再挂
 RECOVER_WAIT_TIME = 10
 
 # 是否跟随 Polymarket 的 best bid
