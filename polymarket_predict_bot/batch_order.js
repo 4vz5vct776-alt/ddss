@@ -36,7 +36,8 @@ const CONFIG = {
 
   // 交易参数
   TOTAL_BUDGET: 30.0,     // 总预算 30 USDB
-  ORDER_SIZE: 10,         // 每个市场挂 10 份额
+  ORDER_SIZE: 20,         // 每个市场挂 20 份额
+  MIN_ORDER_VALUE: 1.0,   // 最低订单价值 (跳过太便宜的)
   SIDE: Side.BUY,         // 买入方向 (0=BUY, 1=SELL)
 
   // 过滤
@@ -266,6 +267,11 @@ async function main() {
 
     // 计算花费
     const cost = book.price * CONFIG.ORDER_SIZE;
+    if (cost < CONFIG.MIN_ORDER_VALUE) {
+      console.log(`  跳过: 订单价值${cost.toFixed(2)}U < 最低${CONFIG.MIN_ORDER_VALUE}U`);
+      skipCount++;
+      continue;
+    }
     if (totalSpent + cost > CONFIG.TOTAL_BUDGET) {
       console.log(`  跳过: 预算不足 (剩余${(CONFIG.TOTAL_BUDGET - totalSpent).toFixed(2)})`);
       break;
