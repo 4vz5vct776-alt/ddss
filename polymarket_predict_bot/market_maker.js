@@ -28,7 +28,7 @@ const CONFIG = {
   // 交易参数
   TOTAL_BUDGET: 30.0,
   ORDER_SIZE: 20,
-  MIN_BID1_SIZE: 2000,        // 买1低于2000份额不挂
+  MIN_BID1_SIZE: 1000,        // 买1低于1000份额不挂
 
   // 轮询/异动
   POLL_INTERVAL: 3000,        // 3秒轮询 (ms)
@@ -479,11 +479,21 @@ async function main() {
   });
   console.log("SDK 初始化成功!\n");
 
-  // 获取市场
+  // 获取市场 (分页获取所有)
   console.log("🔍 扫描可交易市场...");
-  const params = new URLSearchParams({ status: "OPEN", first: "100", hasActiveRewards: "true" });
-  const marketsData = await fetchAPI(`/v1/markets?${params}`);
-  const allMarkets = marketsData.data || [];
+  let allMarkets = [];
+  let page = 0;
+  const pageSize = 100;
+  while (true) {
+    const params = new URLSearchParams({ status: "OPEN", first: String(pageSize), skip: String(page * pageSize), hasActiveRewards: "true" });
+    const marketsData = await fetchAPI(`/v1/markets?${params}`);
+    const batch = marketsData.data || [];
+    allMarkets = allMarkets.concat(batch);
+    console.log(`  第${page + 1}页: ${batch.length} 个市场`);
+    if (batch.length < pageSize) break; // 没有更多了
+    page++;
+    await sleep(500);
+  }
   console.log(`获取到 ${allMarkets.length} 个市场`);
 
   // 过滤
