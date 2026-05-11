@@ -142,15 +142,33 @@ function hasRewards(market) {
 function getTokenId(market) {
   // 从 market outcomes 获取 Yes 的 tokenId
   const outcomes = market.outcomes || [];
-  if (outcomes.length > 0) {
-    // 第一个 outcome 通常是 Yes
-    const outcome = outcomes[0];
+  for (const outcome of outcomes) {
     if (typeof outcome === "object") {
-      return outcome.tokenId || outcome.id || null;
+      // 可能的字段名: tokenId, id, onChainId, token_id
+      const tid = outcome.tokenId || outcome.onChainId || outcome.token_id || outcome.id;
+      if (tid) return String(tid);
+    } else if (typeof outcome === "string") {
+      return outcome;
     }
   }
-  // 或者从 conditionId 获取
-  return market.conditionId || null;
+  // 从 conditionId 获取
+  if (market.conditionId) return market.conditionId;
+  // 从 oracleQuestionId 获取
+  if (market.oracleQuestionId) return market.oracleQuestionId;
+  return null;
+}
+
+// 调试: 打印第一个市场的完整数据结构
+function debugMarket(market) {
+  console.log("\n[DEBUG] 市场数据结构:");
+  console.log("  id:", market.id);
+  console.log("  title:", market.title);
+  console.log("  conditionId:", market.conditionId);
+  console.log("  oracleQuestionId:", market.oracleQuestionId);
+  console.log("  outcomes:", JSON.stringify(market.outcomes, null, 2));
+  console.log("  isNegRisk:", market.isNegRisk);
+  console.log("  isYieldBearing:", market.isYieldBearing);
+  console.log("  feeRateBps:", market.feeRateBps);
 }
 
 // ============ 主函数 ============
@@ -203,6 +221,11 @@ async function main() {
   let skipCount = 0;
 
   // 逐个市场处理
+  // 先调试打印第一个市场数据
+  if (markets.length > 0) {
+    debugMarket(markets[0]);
+  }
+
   for (let i = 0; i < markets.length; i++) {
     const market = markets[i];
 
