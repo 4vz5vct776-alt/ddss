@@ -99,7 +99,7 @@ class PredictBatchTrader:
         """
         获取指定市场的盘口
         API: GET /v1/markets/{id}/orderbook
-        返回买1价格和数量 (公开接口，不需要认证)
+        返回买1价格和数量
         """
         url = f"{self.base_url}/v1/markets/{market_id}/orderbook"
 
@@ -112,9 +112,19 @@ class PredictBatchTrader:
             bids = orderbook.get("bids", [])
 
             if bids:
-                # 买1 = 最高买价
-                bid1_price = float(bids[0].get("price", 0))
-                bid1_size = float(bids[0].get("size", 0))
+                # bids 可能是 [{"price": x, "size": y}] 或 [[price, size], ...]
+                first_bid = bids[0]
+                if isinstance(first_bid, dict):
+                    bid1_price = float(first_bid.get("price", 0))
+                    bid1_size = float(first_bid.get("size", 0))
+                elif isinstance(first_bid, list):
+                    # 格式: [price, size]
+                    bid1_price = float(first_bid[0])
+                    bid1_size = float(first_bid[1]) if len(first_bid) > 1 else 0
+                else:
+                    bid1_price = float(first_bid)
+                    bid1_size = 0
+
                 return {
                     "bid1_price": bid1_price,
                     "bid1_size": bid1_size,
@@ -125,6 +135,9 @@ class PredictBatchTrader:
 
         except requests.exceptions.RequestException as e:
             logger.error(f"获取盘口失败 (market_id={market_id}): {e}")
+            return None
+        except (IndexError, ValueError, TypeError) as e:
+            logger.error(f"解析盘口数据失败 (market_id={market_id}): {e}")
             return None
 
     def create_order(self, market_id, side, price, size):
