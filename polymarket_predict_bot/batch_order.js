@@ -4,7 +4,8 @@
  * 功能:
  *   - 获取所有有星星(有奖励积分)的市场
  *   - 跳过已经开始/进行中的比赛
- *   - 每个市场以买1价格挂10份额
+ *   - 跳过已有活跃挂单的市场 (防重复挂)
+ *   - 每个市场以买1 - 1tick 价格挂单 (防吃单, 确保maker)
  *   - 总预算控制30U
  *   - 成交后 Telegram 通知
  * 
@@ -36,9 +37,10 @@ const CONFIG = {
 
   // 交易参数
   TOTAL_BUDGET: 30.0,     // 总预算 30 USDB
-  ORDER_SIZE: 20,         // 每个市场挂 20 份额
+  ORDER_SIZE: 5,          // 每个市场挂 5 份额
   MIN_ORDER_VALUE: 1.0,   // 最低订单价值 (跳过太便宜的)
   SIDE: Side.BUY,         // 买入方向 (0=BUY, 1=SELL)
+  TICK_SIZE: 0.001,       // 最小价格单位, 用于maker保护
 
   // 过滤
   ONLY_WITH_REWARDS: true,  // 只挂有星星的
@@ -92,6 +94,34 @@ async function getMarkets() {
   });
   const data = await fetchAPI(`/v1/markets?${params}`);
   return data.data || [];
+}
+
+// ============ 获取当前活跃挂单 (防重复) ============
+
+async function getOpenOrders() {
+  const params = new URLSearchParams({
+    status: "OPEN",
+    first: "100",
+  });
+  try {
+    const data = await fetchAPI(`/v1/orders?${params}`);
+    const orders = data.data || (Array.isArray(data) ? data : []);
+
+    // 按 marketId 分组
+    const ordersByMarket = {};
+    for (const o of orders) {
+      const mid = o.marketId || o.market_id || (o.order && o.order.marketId);
+      if (mid) {
+        if (!ordersByMarket[mid]) ordersByMarket[mid] = [];
+        ordersByMarket[mid].push(o);
+      }
+    }
+    console.log(`当前有 ${orders.length} 笔活跃挂单, 覆盖 ${Object.keys(ordersByMarket).length} 个市场`);
+    return ordersByMarket;
+  } catch (e) {
+    console.error(`获取活跃订单失败: ${e.message}`);
+    return {};
+  }
 }
 
 // ============ 获取盘口 ============
@@ -179,11 +209,12 @@ function debugMarket(market) {
 
 async function main() {
   console.log("=".repeat(50));
-  console.log("Predict.fun 批量挂单 (Node.js + 官方SDK)");
+  console.log("Predict.fun 批量挂单 (防重复 + 防吃单)");
   console.log(`预算: ${CONFIG.TOTAL_BUDGET} USDB`);
   console.log(`每笔: ${CONFIG.ORDER_SIZE} 份额`);
   console.log(`只挂有星星: ${CONFIG.ONLY_WITH_REWARDS}`);
   console.log(`跳过进行中: ${CONFIG.SKIP_LIVE_EVENTS}`);
+  console.log(`Maker保护: 买1 - ${CONFIG.TICK_SIZE} (防吃单)`);
   console.log("=".repeat(50));
 
   // 检查私钥
@@ -212,10 +243,15 @@ async function main() {
   const markets = await getMarkets();
   console.log(`获取到 ${markets.length} 个市场`);
 
+  // 获取当前活跃挂单 (用于去重)
+  console.log("\n获取当前活跃挂单...");
+  const existingOrders = await getOpenOrders();
+
   let totalSpent = 0;
   let successCount = 0;
   let failCount = 0;
   let skipCount = 0;
+  let dedupCount = 0;
 
   // 逐个市场处理
   // 先调试打印第一个市场数据
@@ -245,6 +281,13 @@ async function main() {
       continue;
     }
 
+    // 过滤: 跳过已有活跃挂单的市场 (防重复挂单)
+    if (marketId && existingOrders[marketId]) {
+      console.log(`[${i + 1}] 🔁 跳过(已有挂单): ${marketName}`);
+      dedupCount++;
+      continue;
+    }
+
     console.log(`\n[${i + 1}] ${marketName}`);
 
     // 获取盘口
@@ -265,8 +308,18 @@ async function main() {
 
     console.log(`  买1: ${book.price.toFixed(4)} (量=${book.size.toFixed(2)})`);
 
-    // 计算花费
-    const cost = book.price * CONFIG.ORDER_SIZE;
+    // ===== 防吃单: 挂单价格 = 买1 - 1 tick =====
+    // 确保我们的订单在买1后面排队, 不会立刻成交变成taker
+    const orderPrice = parseFloat((book.price - CONFIG.TICK_SIZE).toFixed(4));
+    if (orderPrice <= 0) {
+      console.log(`  跳过: 买1价格太低, 减tick后<=0`);
+      skipCount++;
+      continue;
+    }
+    console.log(`  挂单价: ${orderPrice.toFixed(4)} (买1 - ${CONFIG.TICK_SIZE}, maker保护)`);
+
+    // 计算花费 (用实际挂单价格)
+    const cost = orderPrice * CONFIG.ORDER_SIZE;
     if (cost < CONFIG.MIN_ORDER_VALUE) {
       console.log(`  跳过: 订单价值${cost.toFixed(2)}U < 最低${CONFIG.MIN_ORDER_VALUE}U`);
       skipCount++;
@@ -287,7 +340,7 @@ async function main() {
 
     // 构建并签名订单
     try {
-      const priceWei = BigInt(Math.floor(book.price * 1e18));
+      const priceWei = BigInt(Math.floor(orderPrice * 1e18));
       const quantityWei = BigInt(CONFIG.ORDER_SIZE) * BigInt(1e18);
 
       const { makerAmount, takerAmount, pricePerShare } = orderBuilder.getLimitOrderAmounts({
@@ -339,7 +392,7 @@ async function main() {
 
       // Telegram 通知
       await sendTelegram(
-        `✅ <b>挂单成功</b>\n市场: ${marketName}\n价格: ${book.price.toFixed(4)}\n数量: ${CONFIG.ORDER_SIZE}\n花费: ${cost.toFixed(2)} USDB`
+        `✅ <b>挂单成功</b>\n市场: ${marketName}\n价格: ${orderPrice.toFixed(4)} (maker)\n数量: ${CONFIG.ORDER_SIZE}\n花费: ${cost.toFixed(2)} USDB`
       );
 
     } catch (e) {
@@ -357,6 +410,7 @@ async function main() {
   console.log(`✅ 成功: ${successCount} 笔`);
   console.log(`❌ 失败: ${failCount} 笔`);
   console.log(`⏭️ 跳过: ${skipCount} 笔`);
+  console.log(`🔁 去重跳过: ${dedupCount} 笔`);
   console.log(`💰 总花费: ${totalSpent.toFixed(2)} USDB`);
   console.log("=".repeat(50));
 
