@@ -80,6 +80,13 @@ ESPORTS_KEYWORDS = [
 ]
 
 
+CRYPTO_SHORT_KEYWORDS = [
+    "15min", "15 min", "15m", "1hour", "1 hour", "1h",
+    "30min", "30 min", "30m", "5min", "5 min", "5m",
+    "hourly", "每小时", "每15分钟",
+]
+
+
 def classify_market(market):
     """根据标题/分类判断市场类型"""
     title = (market.get("title") or market.get("question") or "").lower()
@@ -97,6 +104,65 @@ def classify_market(market):
             return MarketType.SPORTS
 
     return MarketType.GENERAL
+
+
+def is_live_event(market):
+    """判断市场是否处于比赛进行中(LIVE)状态"""
+    # 检查 tradingStatus / status 字段
+    status = ""
+    ts = market.get("tradingStatus")
+    if isinstance(ts, dict):
+        status = (ts.get("status") or "").upper()
+    elif isinstance(ts, str):
+        status = ts.upper()
+
+    live_statuses = ["LIVE", "IN_PROGRESS", "STARTED", "HALTED", "PLAYING"]
+    if status in live_statuses:
+        return True
+
+    # 检查标题中是否有 [LIVE] 标记
+    title = (market.get("title") or market.get("question") or "")
+    if "[LIVE]" in title or "(LIVE)" in title or "🔴" in title:
+        return True
+
+    # 检查 isLive 字段
+    if market.get("isLive") or market.get("is_live"):
+        return True
+
+    return False
+
+
+def is_crypto_short_term(market):
+    """
+    判断是否为加密货币短期盘(15分钟/小时级别)
+    这类盘子变化太快不适合做市
+    """
+    title = (market.get("title") or market.get("question") or "").lower()
+    category = (market.get("category") or "").lower()
+    tags = [t.lower() for t in (market.get("tags") or [])]
+    combined = f"{title} {category} {' '.join(tags)}"
+
+    # 先判断是否是加密相关
+    crypto_keywords = [
+        "bitcoin", "btc", "ethereum", "eth", "crypto", "sol", "solana",
+        "bnb", "xrp", "doge", "ada", "avax", "matic", "dot",
+        "token", "defi", "加密", "币",
+    ]
+    is_crypto = any(kw in combined for kw in crypto_keywords)
+    if not is_crypto:
+        return False
+
+    # 是加密的前提下，判断是否为短期盘
+    for kw in CRYPTO_SHORT_KEYWORDS:
+        if kw in combined:
+            return True
+
+    # 检查 resolution 时间相关字段
+    resolution = (market.get("resolutionType") or market.get("resolution") or "").lower()
+    if any(kw in resolution for kw in ["15min", "1hour", "hourly", "30min"]):
+        return True
+
+    return False
 
 
 # ============ API 客户端 ============
@@ -534,12 +600,28 @@ def run_market_maker():
         logger.error("没有找到可交易市场!")
         return
 
-    # 2. 分类并创建监控器
+    # 2. 过滤并分类，创建监控器
     monitors = []
     general_count = 0
     sports_count = 0
+    skip_live = 0
+    skip_crypto_short = 0
 
     for m in markets:
+        # 跳过比赛进行中的
+        if is_live_event(m):
+            skip_live += 1
+            mname = (m.get("title") or m.get("question") or "")[:40]
+            logger.info(f"  ⏭️ 跳过(比赛中): {mname}")
+            continue
+
+        # 跳过加密短期盘(15分钟/小时)
+        if is_crypto_short_term(m):
+            skip_crypto_short += 1
+            mname = (m.get("title") or m.get("question") or "")[:40]
+            logger.info(f"  ⏭️ 跳过(加密短期): {mname}")
+            continue
+
         mtype = classify_market(m)
         monitor = MarketMonitor(m, client, mtype)
         monitors.append(monitor)
@@ -549,7 +631,7 @@ def run_market_maker():
         else:
             sports_count += 1
 
-    logger.info(f"✅ 共 {len(monitors)} 个市场")
+    logger.info(f"✅ 共 {len(monitors)} 个市场 (跳过: {skip_live}比赛中 + {skip_crypto_short}加密短期)")
     logger.info(f"   普通: {general_count} 个")
     logger.info(f"   体育/电竞: {sports_count} 个")
     logger.info(f"   统一轮询: 每{POLL_INTERVAL}秒")
