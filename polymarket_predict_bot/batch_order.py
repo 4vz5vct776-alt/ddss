@@ -38,21 +38,32 @@ class PredictBatchTrader:
             "Authorization": f"Bearer {PREDICT_API_KEY}",
             "Content-Type": "application/json",
             "x-api-key": PREDICT_API_KEY,
+            "Cookie": f"predict_token={PREDICT_API_KEY}",
+        })
+        # 公开请求(不需要认证)用另一个session
+        self.public_session = requests.Session()
+        self.public_session.headers.update({
+            "Content-Type": "application/json",
         })
 
     def get_featured_markets(self):
         """
         获取带星星(热门/精选)的市场
-        API: GET /v1/markets?status=TRADING&featured=true
+        API: GET /v1/markets?status=TRADING
+        注意: 获取市场列表不需要认证，用公开session
         """
         url = f"{self.base_url}/v1/markets"
         params = {
             "status": "TRADING",
-            "first": 50,  # 最多50个
+            "first": 50,
         }
 
         try:
-            resp = self.session.get(url, params=params, timeout=10)
+            # 先尝试不带认证的请求(公开接口)
+            resp = self.public_session.get(url, params=params, timeout=10)
+            if resp.status_code == 401:
+                # 如果需要认证，用带认证的session
+                resp = self.session.get(url, params=params, timeout=10)
             resp.raise_for_status()
             data = resp.json()
 
@@ -92,12 +103,14 @@ class PredictBatchTrader:
         """
         获取指定市场的盘口
         API: GET /v1/markets/{id}/orderbook
-        返回买1价格和数量
+        返回买1价格和数量 (公开接口，不需要认证)
         """
         url = f"{self.base_url}/v1/markets/{market_id}/orderbook"
 
         try:
-            resp = self.session.get(url, timeout=10)
+            resp = self.public_session.get(url, timeout=10)
+            if resp.status_code == 401:
+                resp = self.session.get(url, timeout=10)
             resp.raise_for_status()
             data = resp.json()
 
