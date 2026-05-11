@@ -28,7 +28,7 @@ const CONFIG = {
   // 交易参数
   TOTAL_BUDGET: 30.0,
   ORDER_SIZE: 20,
-  MIN_BOOK_VALUE: 1000,       // 盘口总价值低于$1000不挂
+  MIN_BID1_SIZE: 2000,        // 买1低于2000份额不挂
 
   // 轮询/异动
   POLL_INTERVAL: 3000,        // 3秒轮询 (ms)
@@ -434,9 +434,9 @@ class MarketMonitor {
       // 无活跃单 → 选边挂单
       const choice = this.chooseSide(book);
       if (choice && choice.price > 0) {
-        // 盘口流动性检查
-        const totalValue = book.yesBid1Size * book.yesBid1Price + book.noBid1Size * book.noBid1Price;
-        if (totalValue < CONFIG.MIN_BOOK_VALUE) return;
+        // 买1量检查: 低于2000份额不挂
+        const bid1Size = choice.side === "BUY_YES" ? book.yesBid1Size : book.noBid1Size;
+        if (bid1Size < CONFIG.MIN_BID1_SIZE) return;
 
         await this.placeOrder(choice);
       }
@@ -455,7 +455,7 @@ async function main() {
   console.log(`撤单冷却: ${CONFIG.RECOVER_WAIT / 1000} 秒`);
   console.log(`每笔份额: ${CONFIG.ORDER_SIZE}`);
   console.log(`总预算: ${CONFIG.TOTAL_BUDGET} USDB`);
-  console.log(`盘口最低: $${CONFIG.MIN_BOOK_VALUE}`);
+  console.log(`盘口最低: 买1≥${CONFIG.MIN_BID1_SIZE} shares`);
   console.log("=".repeat(60));
 
   // 检查私钥
@@ -503,9 +503,8 @@ async function main() {
   console.log(`   普通: ${generalCount} | 体育/电竞: ${sportsCount}`);
   console.log(`   统一轮询: 每${CONFIG.POLL_INTERVAL / 1000}秒\n`);
 
-  // 预算控制
-  const maxConcurrent = Math.floor(CONFIG.TOTAL_BUDGET / (CONFIG.ORDER_SIZE * 0.3));
-  console.log(`   最大并发挂单: ~${maxConcurrent}\n`);
+  // 挂单不占余额，不限制并发数
+  console.log(`   无并发限制 (Predict挂单不占余额)\n`);
 
   // 退出清理
   let running = true;
@@ -530,13 +529,8 @@ async function main() {
   console.log("🚀 开始做市循环...\n");
 
   while (running) {
-    const activeCount = monitors.filter(m => m.activeOrderId).length;
-
     for (const monitor of monitors) {
       if (!running) break;
-
-      // 预算控制
-      if (!monitor.activeOrderId && activeCount >= maxConcurrent) continue;
 
       try {
         await monitor.tick();
