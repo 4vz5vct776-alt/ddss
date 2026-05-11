@@ -19,8 +19,11 @@ import { OrderBuilder, ChainId, Side } from "@predictdotfun/sdk";
 
 // ============ 配置 ============
 const CONFIG = {
-  // 你的钱包私钥 (从 MetaMask 导出, 不要分享给任何人!)
+  // 你的钱包私钥 (从 predict.fun 设置里 Copy Key 获取)
   PRIVATE_KEY: "YOUR_PRIVATE_KEY_HERE",
+
+  // Predict.fun 交易账户地址 (deposit 地址, 网站内部钱包)
+  PREDICT_ACCOUNT: "0xF07E38e61E3a4c64364f56a5679578d860160f5a",
 
   // Predict.fun API Key (UUID格式)
   API_KEY: "5f623dc1-147a-4767-8795-cf02f1f25149",
@@ -192,23 +195,16 @@ async function main() {
   // 初始化钱包和 OrderBuilder
   console.log("\n初始化钱包和 SDK...");
   const signer = new Wallet(CONFIG.PRIVATE_KEY);
-  console.log(`钱包地址: ${signer.address}`);
+  console.log(`签名钱包地址: ${signer.address}`);
+  console.log(`交易账户地址: ${CONFIG.PREDICT_ACCOUNT}`);
 
-  const orderBuilder = await OrderBuilder.make(ChainId.BnbMainnet, signer);
-  console.log("SDK 初始化成功!");
+  const orderBuilder = await OrderBuilder.make(ChainId.BnbMainnet, signer, {
+    predictAccount: CONFIG.PREDICT_ACCOUNT,
+  });
+  console.log("SDK 初始化成功! (Predict Account 模式)");
 
-  // 设置 approvals (首次需要, 之后可以跳过)
-  console.log("\n检查/设置 approvals...");
-  try {
-    const approvalResult = await orderBuilder.setApprovals();
-    if (approvalResult.success) {
-      console.log("Approvals 已设置!");
-    } else {
-      console.warn("Approvals 设置失败, 可能已经设置过了, 继续...");
-    }
-  } catch (e) {
-    console.warn("Approvals 检查异常 (可能已设置):", e.message);
-  }
+  // 跳过 setApprovals - 你已经在网站上交易过，approvals 已设好
+  console.log("\n跳过 approvals (已在网站上设置过)...");
 
   // 获取市场列表
   console.log("\n获取市场列表...");
@@ -295,8 +291,6 @@ async function main() {
       });
 
       const order = orderBuilder.buildOrder("LIMIT", {
-        maker: signer.address,
-        signer: signer.address,
         side: CONFIG.SIDE,
         tokenId: tokenId,
         makerAmount,
