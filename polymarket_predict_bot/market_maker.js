@@ -213,7 +213,8 @@ async function getOrderStatus(orderId) {
   try {
     const data = await fetchAPI(`/v1/orders/${orderId}`);
     const order = data.data || data;
-    return order.status || order.state || "UNKNOWN";
+    const status = (order.status || order.state || order.orderStatus || "UNKNOWN").toUpperCase();
+    return status;
   } catch {
     return null;
   }
@@ -313,8 +314,15 @@ class MarketMonitor {
     const tokenId = getTokenId(this.market, tokenIdx);
     if (!tokenId) return null;
 
+    // 价格精度修正: 最多3位小数
+    const fixedPrice = Math.floor(price * 1000) / 1000;
+    if (fixedPrice <= 0) return null;
+
+    // 最低订单价值检查: price * ORDER_SIZE >= 0.9
+    if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) return null;
+
     try {
-      const priceWei = BigInt(Math.floor(price * 1e18));
+      const priceWei = BigInt(Math.floor(fixedPrice * 1e18));
       const quantityWei = BigInt(CONFIG.ORDER_SIZE) * BigInt(1e18);
 
       const { makerAmount, takerAmount, pricePerShare } = this.orderBuilder.getLimitOrderAmounts({
@@ -359,7 +367,7 @@ class MarketMonitor {
       });
 
       const orderId = result.data?.orderId || result.orderId || null;
-      console.log(`  ✅ [${this.marketName}] 挂单: ${side} @ ${price.toFixed(4)}, id=${orderId}`);
+      console.log(`  ✅ [${this.marketName}] 挂单: ${side} @ ${fixedPrice.toFixed(3)}, id=${orderId}`);
       this.activeOrderId = orderId;
       this.activeSide = side;
       return orderId;
@@ -385,7 +393,8 @@ class MarketMonitor {
     // 检测挂单是否被吃
     if (this.activeOrderId) {
       const status = await getOrderStatus(this.activeOrderId);
-      if (status && ["FILLED", "PARTIALLY_FILLED", "MATCHED"].includes(status)) {
+      if (status && status !== "OPEN" && status !== "LIVE" && status !== "UNKNOWN" && status !== "PENDING") {
+        // 非挂单中状态 = 被吃了或部分成交
         console.log(`  🔔 [${this.marketName}] 挂单被吃! side=${this.activeSide}, status=${status}`);
         await sendTelegram(
           `🔔 <b>挂单被吃!</b>\n\n📊 市场: ${this.marketName}\n📈 方向: ${this.activeSide}\n🆔 订单: ${this.activeOrderId}\n📋 状态: ${status}`
