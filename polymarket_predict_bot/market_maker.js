@@ -479,20 +479,19 @@ async function main() {
   });
   console.log("SDK 初始化成功!\n");
 
-  // 获取市场 (分页获取所有)
+  // 获取市场 (分页获取前500个，覆盖所有活跃市场)
   console.log("🔍 扫描可交易市场...");
   let allMarkets = [];
-  let page = 0;
   const pageSize = 100;
-  while (true) {
+  const maxPages = 5; // 最多5页=500个市场
+  for (let page = 0; page < maxPages; page++) {
     const params = new URLSearchParams({ status: "OPEN", first: String(pageSize), skip: String(page * pageSize), hasActiveRewards: "true" });
     const marketsData = await fetchAPI(`/v1/markets?${params}`);
     const batch = marketsData.data || [];
     allMarkets = allMarkets.concat(batch);
     console.log(`  第${page + 1}页: ${batch.length} 个市场`);
-    if (batch.length < pageSize) break; // 没有更多了
-    page++;
-    await sleep(500);
+    if (batch.length < pageSize) break;
+    await sleep(300);
   }
   console.log(`获取到 ${allMarkets.length} 个市场`);
 
