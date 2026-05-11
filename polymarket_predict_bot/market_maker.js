@@ -299,6 +299,7 @@ class MarketMonitor {
     this.lastBid1Size = null;
     this.isCoolingDown = false;
     this.cooldownStart = 0;
+    this.isFilled = false; // 被吃单后永久停止该市场
 
     // Polymarket
     this.polymarketTokenId = market.polymarketTokenId || null;
@@ -365,7 +366,15 @@ class MarketMonitor {
 
   async cancelActiveOrder() {
     if (this.activeOrderId) {
-      await cancelOrder(this.activeOrderId);
+      const success = await cancelOrder(this.activeOrderId);
+      if (!success) {
+        // 撤单失败 = 订单已经不存在 = 被吃了
+        console.log(`  🔔 [${this.marketName}] 挂单被吃! (撤单失败=已成交) 该市场永久停止`);
+        await sendTelegram(
+          `🔔 <b>挂单被吃!</b>\n\n📊 市场: ${this.marketName}\n📈 方向: ${this.activeSide}\n🆔 订单: ${this.activeOrderId}\n⛔ 该市场已停止挂单`
+        );
+        this.isFilled = true;
+      }
       console.log(`  🛡️ [${this.marketName}] 已撤单保护`);
       this.activeOrderId = null;
       this.activeSide = null;
@@ -460,6 +469,9 @@ class MarketMonitor {
   }
 
   async tick() {
+    // 被吃单的市场永久停止
+    if (this.isFilled) return;
+
     // 冷却期
     if (this.isCoolingDown) {
       if (Date.now() - this.cooldownStart < CONFIG.RECOVER_WAIT) return;
