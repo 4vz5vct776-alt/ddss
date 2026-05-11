@@ -28,7 +28,7 @@ const CONFIG = {
   // 交易参数
   TOTAL_BUDGET: 30.0,
   ORDER_SIZE: 20,
-  MIN_BID1_SIZE: 1000,        // 买1低于1000份额不挂
+  MIN_BID1_SIZE: 2000,        // 买1低于2000份额不挂
 
   // 轮询/异动
   POLL_INTERVAL: 3000,        // 3秒轮询 (ms)
@@ -64,6 +64,12 @@ const CRYPTO_SHORT_KEYWORDS = [
 const CRYPTO_KEYWORDS = [
   "bitcoin", "btc", "ethereum", "eth", "crypto", "sol", "solana",
   "bnb", "xrp", "doge", "ada", "avax", "matic", "dot", "token", "defi",
+];
+
+const POLITICAL_KEYWORDS = [
+  "fed", "fomc", "federal reserve", "interest rate", "rate cut", "rate hike",
+  "trump", "biden", "congress", "senate", "election", "president",
+  "governor", "政治", "美联储", "降息", "加息",
 ];
 
 // ============ 工具函数 ============
@@ -125,6 +131,11 @@ function isCryptoShortTerm(market) {
   const isCrypto = CRYPTO_KEYWORDS.some(kw => combined.includes(kw));
   if (!isCrypto) return false;
   return CRYPTO_SHORT_KEYWORDS.some(kw => combined.includes(kw));
+}
+
+function isPoliticalEvent(market) {
+  const combined = `${market.title || ""} ${market.category || ""} ${(market.tags || []).join(" ")}`.toLowerCase();
+  return POLITICAL_KEYWORDS.some(kw => combined.includes(kw));
 }
 
 function getTokenId(market, tokenIdx) {
@@ -393,11 +404,13 @@ class MarketMonitor {
     // 检测挂单是否被吃
     if (this.activeOrderId) {
       const status = await getOrderStatus(this.activeOrderId);
-      if (status && status !== "OPEN" && status !== "LIVE" && status !== "UNKNOWN" && status !== "PENDING") {
-        // 非挂单中状态 = 被吃了或部分成交
-        console.log(`  🔔 [${this.marketName}] 挂单被吃! side=${this.activeSide}, status=${status}`);
+      // 如果查询失败(null) = 订单可能已经不存在了(被吃了)
+      // 如果状态不是 OPEN/LIVE/PENDING/UNKNOWN = 被吃了
+      if (status === null || (status && status !== "OPEN" && status !== "LIVE" && status !== "UNKNOWN" && status !== "PENDING")) {
+        const displayStatus = status || "ORDER_GONE";
+        console.log(`  🔔 [${this.marketName}] 挂单被吃! side=${this.activeSide}, status=${displayStatus}`);
         await sendTelegram(
-          `🔔 <b>挂单被吃!</b>\n\n📊 市场: ${this.marketName}\n📈 方向: ${this.activeSide}\n🆔 订单: ${this.activeOrderId}\n📋 状态: ${status}`
+          `🔔 <b>挂单被吃!</b>\n\n📊 市场: ${this.marketName}\n📈 方向: ${this.activeSide}\n🆔 订单: ${this.activeOrderId}\n📋 状态: ${displayStatus}`
         );
         this.activeOrderId = null;
         this.activeSide = null;
@@ -497,18 +510,19 @@ async function main() {
 
   // 过滤
   const monitors = [];
-  let skipLive = 0, skipCrypto = 0;
+  let skipLive = 0, skipCrypto = 0, skipPolitical = 0;
 
   for (const m of allMarkets) {
     if (isLiveEvent(m)) { skipLive++; continue; }
     if (isCryptoShortTerm(m)) { skipCrypto++; continue; }
+    if (isPoliticalEvent(m)) { skipPolitical++; continue; }
     monitors.push(new MarketMonitor(m, orderBuilder));
   }
 
   const generalCount = monitors.filter(m => m.marketType === "general").length;
   const sportsCount = monitors.filter(m => m.marketType !== "general").length;
 
-  console.log(`✅ 共 ${monitors.length} 个市场 (跳过: ${skipLive}比赛中 + ${skipCrypto}加密短期)`);
+  console.log(`✅ 共 ${monitors.length} 个市场 (跳过: ${skipLive}比赛中 + ${skipCrypto}加密短期 + ${skipPolitical}政治事件)`);
   console.log(`   普通: ${generalCount} | 体育/电竞: ${sportsCount}`);
   console.log(`   统一轮询: 每${CONFIG.POLL_INTERVAL / 1000}秒\n`);
 
