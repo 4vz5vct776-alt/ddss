@@ -46,6 +46,7 @@ logger = logging.getLogger(__name__)
 running = True
 POLL_INTERVAL = 3               # 所有市场统一3秒轮询
 RECOVER_WAIT_TIME = 30          # 撤单后等待恢复时间(秒)
+MIN_BOOK_VALUE = 1000           # 盘口最低流动性(美金)，低于不挂
 
 
 def signal_handler(sig, frame):
@@ -571,6 +572,13 @@ class MarketMonitor:
             # 无活跃单 → 选边挂单
             side, price = self.choose_side(book)
             if side and price > 0:
+                # 盘口流动性检查: 两边买1总价值 < $1000 不挂
+                yes_value = book.get("yes_bid1_size", 0) * book.get("yes_bid1_price", 0)
+                no_value = book.get("no_bid1_size", 0) * book.get("no_bid1_price", 0)
+                total_book_value = yes_value + no_value
+                if total_book_value < MIN_BOOK_VALUE:
+                    return  # 盘口太薄，跳过
+
                 logger.info(
                     f"📈 [{self.market_name[:30]}] 挂单: {side} @ {price:.4f}"
                 )
