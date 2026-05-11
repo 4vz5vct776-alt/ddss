@@ -312,11 +312,17 @@ async function main() {
       const signedOrder = await orderBuilder.signTypedDataOrder(typedData);
       const hash = orderBuilder.buildTypedDataHash(typedData);
 
-      // 提交到 API
+      // 提交到 API (需要将 BigInt 转为 string)
+      const serializableOrder = {};
+      for (const [key, value] of Object.entries(signedOrder)) {
+        serializableOrder[key] = typeof value === "bigint" ? value.toString() : value;
+      }
+      serializableOrder.hash = hash;
+
       const createOrderBody = {
         data: {
-          order: { ...signedOrder, hash },
-          pricePerShare,
+          order: serializableOrder,
+          pricePerShare: typeof pricePerShare === "bigint" ? pricePerShare.toString() : pricePerShare,
           strategy: "LIMIT",
         },
       };
