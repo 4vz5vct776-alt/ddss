@@ -38,12 +38,6 @@ class PredictBatchTrader:
             "Authorization": f"Bearer {PREDICT_API_KEY}",
             "Content-Type": "application/json",
             "x-api-key": PREDICT_API_KEY,
-            "Cookie": f"predict_token={PREDICT_API_KEY}",
-        })
-        # 公开请求(不需要认证)用另一个session
-        self.public_session = requests.Session()
-        self.public_session.headers.update({
-            "Content-Type": "application/json",
         })
 
     def get_featured_markets(self):
@@ -54,16 +48,18 @@ class PredictBatchTrader:
         """
         url = f"{self.base_url}/v1/markets"
         params = {
-            "status": "TRADING",
+            "status": "OPEN",
             "first": 50,
+            "hasActiveRewards": "true",
         }
 
         try:
-            # 先尝试不带认证的请求(公开接口)
-            resp = self.public_session.get(url, params=params, timeout=10)
+            resp = self.session.get(url, params=params, timeout=10)
             if resp.status_code == 401:
-                # 如果需要认证，用带认证的session
-                resp = self.session.get(url, params=params, timeout=10)
+                # 尝试不带status参数
+                resp = self.session.get(
+                    url, params={"first": 50}, timeout=10
+                )
             resp.raise_for_status()
             data = resp.json()
 
@@ -108,9 +104,7 @@ class PredictBatchTrader:
         url = f"{self.base_url}/v1/markets/{market_id}/orderbook"
 
         try:
-            resp = self.public_session.get(url, timeout=10)
-            if resp.status_code == 401:
-                resp = self.session.get(url, timeout=10)
+            resp = self.session.get(url, timeout=10)
             resp.raise_for_status()
             data = resp.json()
 
