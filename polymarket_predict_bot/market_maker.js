@@ -382,6 +382,11 @@ class MarketMonitor {
   }
 
   async placeOrder(sideInfo, book) {
+    // 防重复: 如果已经有活跃订单, 拒绝再挂
+    if (this.activeOrderId) {
+      return null;
+    }
+
     const { side, price, sdkSide, tokenIdx } = sideInfo;
     const tokenId = getTokenId(this.market, tokenIdx);
     if (!tokenId) return null;
@@ -578,21 +583,28 @@ async function main() {
   }
   console.log(`获取到 ${allMarkets.length} 个市场`);
 
-  // 过滤
+  // 过滤 + 去重 (防止分页返回重复市场导致同一市场创建多个monitor)
   const monitors = [];
-  let skipLive = 0, skipCrypto = 0, skipPolitical = 0;
+  const seenMarketIds = new Set();
+  let skipLive = 0, skipCrypto = 0, skipPolitical = 0, skipDup = 0;
 
   for (const m of allMarkets) {
     if (isLiveEvent(m)) { skipLive++; continue; }
     if (isCryptoShortTerm(m)) { skipCrypto++; continue; }
     if (isPoliticalEvent(m)) { skipPolitical++; continue; }
+
+    // 去重: 同一个marketId只创建一个monitor
+    const mid = m.id || m.marketId;
+    if (seenMarketIds.has(mid)) { skipDup++; continue; }
+    seenMarketIds.add(mid);
+
     monitors.push(new MarketMonitor(m, orderBuilder));
   }
 
   const generalCount = monitors.filter(m => m.marketType === "general").length;
   const sportsCount = monitors.filter(m => m.marketType !== "general").length;
 
-  console.log(`✅ 共 ${monitors.length} 个市场 (跳过: ${skipLive}比赛中 + ${skipCrypto}加密短期 + ${skipPolitical}政治事件)`);
+  console.log(`✅ 共 ${monitors.length} 个市场 (跳过: ${skipLive}比赛中 + ${skipCrypto}加密短期 + ${skipPolitical}政治事件 + ${skipDup}重复)`);
   console.log(`   普通: ${generalCount} | 体育/电竞: ${sportsCount}`);
   console.log(`   统一轮询: 每${CONFIG.POLL_INTERVAL / 1000}秒\n`);
 
