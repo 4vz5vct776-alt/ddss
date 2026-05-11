@@ -127,11 +127,10 @@ function isCryptoShortTerm(market) {
   return CRYPTO_SHORT_KEYWORDS.some(kw => combined.includes(kw));
 }
 
-function getTokenId(market, side) {
-  // side: "BUY" → Yes outcome (index 0), "SELL" → No outcome (index 1)
+function getTokenId(market, tokenIdx) {
+  // tokenIdx: 0 = Yes outcome, 1 = No outcome
   const outcomes = market.outcomes || [];
-  const idx = side === "SELL" ? 1 : 0;
-  const outcome = outcomes[idx] || outcomes[0];
+  const outcome = outcomes[tokenIdx] || outcomes[0];
   if (!outcome) return null;
   if (typeof outcome === "object") {
     return String(outcome.onChainId || outcome.tokenId || outcome.token_id || outcome.id || "");
@@ -246,15 +245,17 @@ class MarketMonitor {
     const { yesBid1Size, yesBid1Price, noBid1Size, noBid1Price } = book;
     if (yesBid1Size <= 0 && noBid1Size <= 0) return null;
 
+    // 永远只挂 BUY (只需要USDB余额，不需要持有份额)
+    // 哪边买1量多就买哪边的 token
     if (yesBid1Size >= noBid1Size) {
-      return { side: "BUY", price: yesBid1Price, sdkSide: Side.BUY };
+      return { side: "BUY_YES", price: yesBid1Price, sdkSide: Side.BUY, tokenIdx: 0 };
     } else {
-      return { side: "SELL", price: noBid1Price, sdkSide: Side.SELL };
+      return { side: "BUY_NO", price: noBid1Price, sdkSide: Side.BUY, tokenIdx: 1 };
     }
   }
 
   checkAnomaly(book) {
-    const currentSize = this.activeSide === "BUY" ? book.yesBid1Size : book.noBid1Size;
+    const currentSize = this.activeSide === "BUY_YES" ? book.yesBid1Size : book.noBid1Size;
 
     if (this.lastBid1Size === null) {
       this.lastBid1Size = currentSize;
@@ -308,8 +309,8 @@ class MarketMonitor {
   }
 
   async placeOrder(sideInfo) {
-    const { side, price, sdkSide } = sideInfo;
-    const tokenId = getTokenId(this.market, side);
+    const { side, price, sdkSide, tokenIdx } = sideInfo;
+    const tokenId = getTokenId(this.market, tokenIdx);
     if (!tokenId) return null;
 
     try {
