@@ -472,21 +472,8 @@ class MarketMonitor {
     const book = await getFullOrderbook(this.marketId);
     if (!book) return;
 
-    // 检测挂单是否被吃
-    if (this.activeOrderId) {
-      const status = await getOrderStatus(this.activeOrderId);
-      // status === null: API查询失败, 跳过不处理 (可能只是网络波动)
-      // 只有明确返回非OPEN状态时才认为被吃了
-      if (status !== null && status !== "OPEN" && status !== "LIVE" && status !== "UNKNOWN" && status !== "PENDING") {
-        console.log(`  🔔 [${this.marketName}] 挂单被吃! side=${this.activeSide}, status=${status}`);
-        await sendTelegram(
-          `🔔 <b>挂单被吃!</b>\n\n📊 市场: ${this.marketName}\n📈 方向: ${this.activeSide}\n🆔 订单: ${this.activeOrderId}\n📋 状态: ${status}`
-        );
-        this.activeOrderId = null;
-        this.activeSide = null;
-        this.lastBid1Size = null;
-      }
-    }
+    // 注意: 不再主动查 getOrderStatus (会误判导致重复挂单)
+    // 挂单后只通过异动检测来管理, 不主动清空 activeOrderId
 
     // 体育/电竞: Polymarket 异动检测
     if (this.marketType === "sports" || this.marketType === "esports") {
