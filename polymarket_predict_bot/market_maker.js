@@ -27,8 +27,9 @@ const CONFIG = {
 
   // 交易参数
   TOTAL_BUDGET: 30.0,
-  ORDER_SIZE: 20,
+  ORDER_SIZE: 5,              // 每笔5份额
   MIN_BID1_SIZE: 2000,        // 买1低于2000份额不挂
+  TICK_SIZE: 0.001,           // maker保护: 挂单价 = 买1 - tick, 防吃单
 
   // 轮询/异动
   POLL_INTERVAL: 3000,        // 3秒轮询 (ms)
@@ -325,8 +326,12 @@ class MarketMonitor {
     const tokenId = getTokenId(this.market, tokenIdx);
     if (!tokenId) return null;
 
+    // ===== 防吃单: 挂单价格 = 买1 - 1 tick =====
+    // 确保只做maker, 不会立刻成交变成taker
+    const makerPrice = price - CONFIG.TICK_SIZE;
+
     // 价格精度修正: 最多3位小数
-    const fixedPrice = Math.floor(price * 1000) / 1000;
+    const fixedPrice = Math.floor(makerPrice * 1000) / 1000;
     if (fixedPrice <= 0) return null;
 
     // 最低订单价值检查: price * ORDER_SIZE >= 0.9
@@ -404,13 +409,12 @@ class MarketMonitor {
     // 检测挂单是否被吃
     if (this.activeOrderId) {
       const status = await getOrderStatus(this.activeOrderId);
-      // 如果查询失败(null) = 订单可能已经不存在了(被吃了)
-      // 如果状态不是 OPEN/LIVE/PENDING/UNKNOWN = 被吃了
-      if (status === null || (status && status !== "OPEN" && status !== "LIVE" && status !== "UNKNOWN" && status !== "PENDING")) {
-        const displayStatus = status || "ORDER_GONE";
-        console.log(`  🔔 [${this.marketName}] 挂单被吃! side=${this.activeSide}, status=${displayStatus}`);
+      // status === null: API查询失败, 跳过不处理 (可能只是网络波动)
+      // 只有明确返回非OPEN状态时才认为被吃了
+      if (status !== null && status !== "OPEN" && status !== "LIVE" && status !== "UNKNOWN" && status !== "PENDING") {
+        console.log(`  🔔 [${this.marketName}] 挂单被吃! side=${this.activeSide}, status=${status}`);
         await sendTelegram(
-          `🔔 <b>挂单被吃!</b>\n\n📊 市场: ${this.marketName}\n📈 方向: ${this.activeSide}\n🆔 订单: ${this.activeOrderId}\n📋 状态: ${displayStatus}`
+          `🔔 <b>挂单被吃!</b>\n\n📊 市场: ${this.marketName}\n📈 方向: ${this.activeSide}\n🆔 订单: ${this.activeOrderId}\n📋 状态: ${status}`
         );
         this.activeOrderId = null;
         this.activeSide = null;
@@ -469,6 +473,7 @@ async function main() {
   console.log(`每笔份额: ${CONFIG.ORDER_SIZE}`);
   console.log(`总预算: ${CONFIG.TOTAL_BUDGET} USDB`);
   console.log(`盘口最低: 买1≥${CONFIG.MIN_BID1_SIZE} shares`);
+  console.log(`Maker保护: 买1 - ${CONFIG.TICK_SIZE} (防吃单)`);
   console.log("=".repeat(60));
 
   // 检查私钥
