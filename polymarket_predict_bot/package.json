@@ -1,0 +1,14 @@
+{
+  "name": "predict-bot",
+  "version": "1.0.0",
+  "description": "Predict.fun 批量挂单/撤单 Bot",
+  "type": "module",
+  "scripts": {
+    "order": "node batch_order.js",
+    "cancel": "node batch_cancel_js.js"
+  },
+  "dependencies": {
+    "@predictdotfun/sdk": "latest",
+    "ethers": "^6.0.0"
+  }
+}
