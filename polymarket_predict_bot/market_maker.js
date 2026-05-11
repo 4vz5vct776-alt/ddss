@@ -29,7 +29,8 @@ const CONFIG = {
   TOTAL_BUDGET: 30.0,
   ORDER_SIZE: 5,              // 每笔5份额
   MIN_BID1_SIZE: 2000,        // 买1低于2000份额不挂
-  TICK_SIZE: 0.001,           // maker保护: 挂单价 = 买1 - tick, 防吃单
+  TICK_SIZE: 0.01,            // maker保护: 挂单价 = 买1 - tick, 防吃单 (predict.fun最小tick=0.01)
+  MAX_MARKETS_PER_EVENT: 1,   // 同一父事件最多挂几个子市场 (防重复)
 
   // 轮询/异动
   POLL_INTERVAL: 3000,        // 3秒轮询 (ms)
@@ -171,8 +172,20 @@ async function getFullOrderbook(marketId) {
       }
     }
 
+    // Yes 卖1 (最低卖价, 用于判断是否会吃单)
+    const yesAsks = ob.asks || [];
+    let yesAsk1Price = 999;
+    if (yesAsks.length > 0) {
+      const a = yesAsks[0];
+      if (typeof a === "object" && !Array.isArray(a)) {
+        yesAsk1Price = parseFloat(a.price || 999);
+      } else if (Array.isArray(a)) {
+        yesAsk1Price = parseFloat(a[0] || 999);
+      }
+    }
+
     // No 买1
-    const noBids = ob.noBids || ob.asks || [];
+    const noBids = ob.noBids || [];
     let noBid1Price = 0, noBid1Size = 0;
     if (noBids.length > 0) {
       const b = noBids[0];
@@ -185,7 +198,19 @@ async function getFullOrderbook(marketId) {
       }
     }
 
-    return { yesBid1Price, yesBid1Size, noBid1Price, noBid1Size };
+    // No 卖1
+    const noAsks = ob.noAsks || [];
+    let noAsk1Price = 999;
+    if (noAsks.length > 0) {
+      const a = noAsks[0];
+      if (typeof a === "object" && !Array.isArray(a)) {
+        noAsk1Price = parseFloat(a.price || 999);
+      } else if (Array.isArray(a)) {
+        noAsk1Price = parseFloat(a[0] || 999);
+      }
+    }
+
+    return { yesBid1Price, yesBid1Size, yesAsk1Price, noBid1Price, noBid1Size, noAsk1Price };
   } catch (e) {
     return null;
   }
@@ -216,6 +241,32 @@ async function cancelOrder(orderId) {
   } catch (e) {
     console.error(`  撤单失败 (${orderId}): ${e.message}`);
     return false;
+  }
+}
+
+// ============ 获取所有活跃挂单 (启动时恢复状态, 防重复) ============
+
+async function getExistingOpenOrders() {
+  try {
+    const params = new URLSearchParams({ status: "OPEN", first: "200" });
+    const data = await fetchAPI(`/v1/orders?${params}`);
+    const orders = data.data || (Array.isArray(data) ? data : []);
+
+    // 按 marketId 分组
+    const ordersByMarket = {};
+    for (const o of orders) {
+      const mid = o.marketId || o.market_id || (o.order && o.order.marketId);
+      const oid = o.orderId || o.id || (o.order && o.order.orderId);
+      if (mid && oid) {
+        if (!ordersByMarket[mid]) ordersByMarket[mid] = [];
+        ordersByMarket[mid].push(oid);
+      }
+    }
+    console.log(`📋 当前有 ${orders.length} 笔活跃挂单, 覆盖 ${Object.keys(ordersByMarket).length} 个市场`);
+    return ordersByMarket;
+  } catch (e) {
+    console.error(`获取活跃订单失败: ${e.message}`);
+    return {};
   }
 }
 
@@ -321,21 +372,36 @@ class MarketMonitor {
     }
   }
 
-  async placeOrder(sideInfo) {
+  async placeOrder(sideInfo, book) {
     const { side, price, sdkSide, tokenIdx } = sideInfo;
     const tokenId = getTokenId(this.market, tokenIdx);
     if (!tokenId) return null;
 
-    // ===== 防吃单: 挂单价格 = 买1 - 1 tick =====
-    // 确保只做maker, 不会立刻成交变成taker
-    const makerPrice = price - CONFIG.TICK_SIZE;
+    // ===== 防吃单: 确保挂单价 < 对面最低卖价 =====
+    // 如果 bid >= ask, 说明会立即撮合 (变成taker)
+    const ask1 = side === "BUY_YES" ? (book?.yesAsk1Price || 999) : (book?.noAsk1Price || 999);
+    
+    // 方案: 挂单价 = min(买1 - tick, 卖1 - tick)
+    // 这样确保我们的价格严格低于卖1，不会被撮合
+    let makerPrice = price - CONFIG.TICK_SIZE;
+    if (makerPrice >= ask1) {
+      // 买1已经 >= 卖1 (spread=0或负), 必须挂在 ask1 以下
+      makerPrice = ask1 - CONFIG.TICK_SIZE;
+      console.log(`  ⚠️ [${this.marketName}] spread=0! 买1=${price.toFixed(3)} >= 卖1=${ask1.toFixed(3)}, 降价到 ${makerPrice.toFixed(3)}`);
+    }
 
-    // 价格精度修正: 最多3位小数
+    // 价格精度修正: 最多3位小数 (向下取整)
     const fixedPrice = Math.floor(makerPrice * 1000) / 1000;
     if (fixedPrice <= 0) return null;
 
     // 最低订单价值检查: price * ORDER_SIZE >= 0.9
     if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) return null;
+
+    // 再次确认: 挂单价必须严格 < ask1
+    if (fixedPrice >= ask1) {
+      console.log(`  🚫 [${this.marketName}] 放弃挂单: 价格${fixedPrice} >= 卖1=${ask1}, 会变成taker`);
+      return null;
+    }
 
     try {
       const priceWei = BigInt(Math.floor(fixedPrice * 1e18));
@@ -445,7 +511,7 @@ class MarketMonitor {
       if (choice && choice.side !== this.activeSide) {
         console.log(`  🔄 [${this.marketName}] 换边: ${this.activeSide} → ${choice.side}`);
         await this.cancelActiveOrder();
-        await this.placeOrder(choice);
+        await this.placeOrder(choice, book);
       }
     } else {
       // 无活跃单 → 选边挂单
@@ -455,7 +521,7 @@ class MarketMonitor {
         const bid1Size = choice.side === "BUY_YES" ? book.yesBid1Size : book.noBid1Size;
         if (bid1Size < CONFIG.MIN_BID1_SIZE) return;
 
-        await this.placeOrder(choice);
+        await this.placeOrder(choice, book);
       }
     }
   }
@@ -530,6 +596,21 @@ async function main() {
   console.log(`✅ 共 ${monitors.length} 个市场 (跳过: ${skipLive}比赛中 + ${skipCrypto}加密短期 + ${skipPolitical}政治事件)`);
   console.log(`   普通: ${generalCount} | 体育/电竞: ${sportsCount}`);
   console.log(`   统一轮询: 每${CONFIG.POLL_INTERVAL / 1000}秒\n`);
+
+  // ===== 启动时恢复已有挂单状态 (防止重启后重复挂单) =====
+  console.log("📋 检查已有活跃挂单 (防重复)...");
+  const existingOrders = await getExistingOpenOrders();
+  let restoredCount = 0;
+  for (const monitor of monitors) {
+    const marketOrders = existingOrders[monitor.marketId];
+    if (marketOrders && marketOrders.length > 0) {
+      // 这个市场已经有挂单了，恢复 activeOrderId 防止重复挂
+      monitor.activeOrderId = marketOrders[0];
+      monitor.activeSide = "RESTORED"; // 标记为已恢复，下次tick时会正常检测
+      restoredCount++;
+    }
+  }
+  console.log(`   恢复了 ${restoredCount} 个市场的挂单状态 (这些市场不会重复挂)\n`);
 
   // 挂单不占余额，不限制并发数
   console.log(`   无并发限制 (Predict挂单不占余额)\n`);
