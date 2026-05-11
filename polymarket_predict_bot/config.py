@@ -55,3 +55,18 @@ RECOVER_WAIT_TIME = 10
 
 # 是否跟随 Polymarket 的 best bid
 FOLLOW_BID = True
+
+
+
+# ============ 手机报警通知 (Telegram) ============
+# 设置方法:
+# 1. 打开 Telegram，搜索 @BotFather
+# 2. 发送 /newbot，按提示创建一个Bot，拿到 Token
+# 3. 搜索 @userinfobot，给它发消息，获取你的 Chat ID
+# 4. 填入下面两个值
+
+# Telegram Bot Token (从 @BotFather 获取)
+TELEGRAM_BOT_TOKEN = "YOUR_TELEGRAM_BOT_TOKEN_HERE"
+
+# 你的 Telegram Chat ID (从 @userinfobot 获取)
+TELEGRAM_CHAT_ID = "YOUR_TELEGRAM_CHAT_ID_HERE"
