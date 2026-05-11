@@ -16,9 +16,14 @@ POLYMARKET_TOKEN_ID = "552974417860170859696369055820637252900324508653510290555
 # Predict.fun API
 PREDICT_API_URL = "https://api.predict.fun"
 
-# 认证方式: JWT Bearer Token
-# 你需要从 Predict.fun 获取 API key 或 JWT token
-PREDICT_API_KEY = "YOUR_PREDICT_FUN_JWT_TOKEN_HERE"
+# API Key (UUID格式, 读取市场/盘口用)
+PREDICT_API_KEY = "5f623dc1-147a-4767-8795-cf02f1f25149"
+
+# JWT Token (eyJ开头, 挂单/撤单用)
+# 从浏览器获取: 打开predict.fun → Cmd+Option+I → Console → 输入:
+# document.cookie.split(';').find(c => c.includes('predict_token')).split('=').slice(1).join('=')
+# 注意: 这个Token大约24小时过期，过期后需要重新获取
+PREDICT_JWT_TOKEN = "YOUR_JWT_TOKEN_HERE"
 
 # 你要在 Predict.fun 上交易的市场ID
 PREDICT_MARKET_ID = "YOUR_PREDICT_MARKET_ID_HERE"

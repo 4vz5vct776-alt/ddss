@@ -23,6 +23,12 @@ from config import (
     SKIP_LIVE_EVENTS,
 )
 
+# 尝试导入 JWT Token (挂单用)
+try:
+    from config import PREDICT_JWT_TOKEN
+except ImportError:
+    PREDICT_JWT_TOKEN = ""
+
 logging.basicConfig(
     level=logging.INFO,
     format="%(asctime)s [%(levelname)s] %(message)s",
@@ -36,9 +42,17 @@ class PredictBatchTrader:
 
     def __init__(self):
         self.base_url = PREDICT_API_URL
+        # 读取用 session (x-api-key)
         self.session = requests.Session()
         self.session.headers.update({
-            "Authorization": f"Bearer {PREDICT_API_KEY}",
+            "Content-Type": "application/json",
+            "x-api-key": PREDICT_API_KEY,
+        })
+        # 挂单用 session (Bearer JWT)
+        jwt = PREDICT_JWT_TOKEN if PREDICT_JWT_TOKEN and PREDICT_JWT_TOKEN != "YOUR_JWT_TOKEN_HERE" else PREDICT_API_KEY
+        self.order_session = requests.Session()
+        self.order_session.headers.update({
+            "Authorization": f"Bearer {jwt}",
             "Content-Type": "application/json",
             "x-api-key": PREDICT_API_KEY,
         })
@@ -166,6 +180,7 @@ class PredictBatchTrader:
         """
         创建限价单
         API: POST /v1/orders
+        使用 JWT Token 认证
         """
         url = f"{self.base_url}/v1/orders"
 
@@ -178,7 +193,7 @@ class PredictBatchTrader:
         }
 
         try:
-            resp = self.session.post(url, json=payload, timeout=10)
+            resp = self.order_session.post(url, json=payload, timeout=10)
             resp.raise_for_status()
             order = resp.json()
             logger.info(
