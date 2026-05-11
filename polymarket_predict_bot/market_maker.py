@@ -33,7 +33,7 @@ from config import (
     TELEGRAM_BOT_TOKEN,
     TELEGRAM_CHAT_ID,
 )
-from notify import send_telegram, notify_danger
+from notify import send_telegram
 
 logging.basicConfig(
     level=logging.INFO,
@@ -425,13 +425,6 @@ class MarketMonitor:
                 f"买1: {self.last_bid1_size:.1f} → {current_size:.1f} "
                 f"(↓{drop_ratio*100:.1f}%)"
             )
-            # 发通知
-            notify_danger(
-                self.market_name,
-                self.last_bid1_size,
-                current_size,
-                drop_ratio,
-            )
 
         self.last_bid1_size = current_size
         return is_anomaly
@@ -460,13 +453,6 @@ class MarketMonitor:
                     f"⚠️ [{self.market_name[:30]}] Polymarket异动! "
                     f"买1: {self._last_poly_bid1:.1f} → {poly_bid1_size:.1f}"
                 )
-                # TG 报警
-                notify_danger(
-                    f"[Polymarket] {self.market_name}",
-                    self._last_poly_bid1,
-                    poly_bid1_size,
-                    drop,
-                )
                 self._last_poly_bid1 = poly_bid1_size
                 return True
 
@@ -478,11 +464,6 @@ class MarketMonitor:
         if self.active_order_id:
             self.client.cancel_order(self.active_order_id)
             logger.info(f"🛡️ [{self.market_name[:30]}] 已撤单保护")
-            send_telegram(
-                f"🛡️ <b>已撤单保护</b>\n"
-                f"📊 市场: {self.market_name}\n"
-                f"类型: {self.market_type.value}"
-            )
             self.active_order_id = None
             self.active_side = None
 
