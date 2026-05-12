@@ -123,6 +123,46 @@ class PredictBatchTrader:
 
         return False
 
+    def is_ended_event(self, market):
+        """
+        判断市场是否已经结束/结算
+        已结束的比赛不应该再挂单
+        """
+        # 检查 tradingStatus
+        trading_status = market.get("tradingStatus", "")
+        if isinstance(trading_status, dict):
+            trading_status = trading_status.get("status", "")
+
+        # 已结束的状态
+        ended_statuses = [
+            "RESOLVED", "SETTLED", "CLOSED", "ENDED",
+            "FINALIZED", "CANCELLED", "EXPIRED",
+        ]
+        if str(trading_status).upper() in ended_statuses:
+            return True
+
+        # 检查市场状态字段
+        market_status = market.get("status", "")
+        if isinstance(market_status, str) and market_status.upper() in ended_statuses:
+            return True
+
+        # 检查 resolved 字段
+        if market.get("resolved") is True or market.get("isResolved") is True:
+            return True
+
+        # 检查 result / outcome 字段 (有结果说明已结束)
+        if market.get("result") is not None or market.get("outcome") is not None:
+            return True
+
+        # 检查 variantData 中的比赛状态
+        variant_data = market.get("variantData", {})
+        if isinstance(variant_data, dict):
+            match_status = variant_data.get("matchStatus", "")
+            if str(match_status).upper() in ["FINISHED", "ENDED", "COMPLETED", "FT", "FINAL"]:
+                return True
+
+        return False
+
     def has_rewards(self, market):
         """判断市场是否有星星(奖励积分)"""
         rewards = market.get("rewards")
@@ -148,6 +188,7 @@ class PredictBatchTrader:
 
             orderbook = data.get("data", data)
             bids = orderbook.get("bids", [])
+            asks = orderbook.get("asks", [])
 
             if bids:
                 first_bid = bids[0]
@@ -165,6 +206,7 @@ class PredictBatchTrader:
                     "bid1_price": bid1_price,
                     "bid1_size": bid1_size,
                     "bids": bids,
+                    "asks": asks,
                 }
             else:
                 return None
@@ -251,6 +293,12 @@ class PredictBatchTrader:
             if ONLY_WITH_REWARDS and not self.has_rewards(market):
                 continue
 
+            # 过滤: 跳过已结束/已结算的比赛
+            if self.is_ended_event(market):
+                logger.info(f"[{i}] ⏭️ 跳过(已结束): {market_name}")
+                skip_count += 1
+                continue
+
             # 过滤: 跳过已开始的比赛
             if SKIP_LIVE_EVENTS and self.is_live_event(market):
                 logger.info(f"[{i}] ⏭️ 跳过(进行中): {market_name}")
@@ -263,6 +311,13 @@ class PredictBatchTrader:
             book = self.get_market_orderbook(market_id)
             if book is None or book["bid1_price"] <= 0:
                 logger.warning(f"  跳过: 没有买盘")
+                skip_count += 1
+                continue
+
+            # 检查是否有卖盘（没有卖1说明市场可能已结束或流动性不足）
+            asks = book.get("asks", [])
+            if not asks:
+                logger.warning(f"  跳过: 没有卖盘(Ask)，市场可能已结束")
                 skip_count += 1
                 continue
 

@@ -35,6 +35,7 @@ const CONFIG = {
   MIN_BID1_FOOTBALL: 4000,
   MIN_BID1_WORLDCUP: 5000,
   MIN_BID1_ESPORTS: 3000,
+  MIN_BID1_NBA: 3000,
   MIN_BID1_FDV: 2000,
 
   // 异动检测
@@ -413,9 +414,10 @@ async function main() {
   console.log(`今天: ${today} | 明天: ${tomorrow}`);
   console.log(`足球: 挂今天+明天的比赛 + 世界杯不限日期`);
   console.log(`电竞: 只挂今天的 CS2/LOL 比赛 (不挂Dota)`);
+  console.log(`NBA: 只挂今天未开赛的比赛 (根据开赛时间判断)`);
   console.log(`加密: FDV预测市场全挂 (不限日期)`);
   console.log(`挂单价格: 买1 (Yes挂6, No挂6)`);
-  console.log(`盘口最低: 足球≥4000 | 世界杯≥5000 | 电竞≥3000 | FDV≥3000`);
+  console.log(`盘口最低: 足球≥4000 | 世界杯≥5000 | 电竞≥3000 | NBA≥3000 | FDV≥3000`);
   console.log(`只挂有积分奖励的市场, LIVE不挂`);
   console.log("=".repeat(60));
 
@@ -481,18 +483,45 @@ async function main() {
     }
   }
 
-  // 电竞/NBA: 只挂今天的, 只挂CS和LOL (不挂Dota)
+  // 电竞/NBA: 只挂今天的, 挂CS/LOL/NBA (不挂Dota/板球/MLB)
   for (const cat of esportsCategories) {
     const eventDate = getEventDate(cat);
     if (!eventDate || eventDate !== today) { skippedDate++; continue; }
 
-    // 只挂 CS2/CSGO 和 LOL, 跳过 Dota
+    // 挂 CS2/CSGO、LOL、NBA, 跳过 Dota/板球/MLB等
     const catTitle = (cat.title || "").toLowerCase();
     const catDesc = (cat.description || "").toLowerCase();
-    const combined = catTitle + " " + catDesc;
+    const catSlug = (cat.categorySlug || cat.slug || "").toLowerCase();
+    const combined = catTitle + " " + catDesc + " " + catSlug;
     const isCS = combined.includes("cs2") || combined.includes("csgo") || combined.includes("counter-strike");
     const isLoL = combined.includes("lol") || combined.includes("league of legends");
-    if (!isCS && !isLoL) { skippedDate++; continue; }
+    const isNBA = combined.includes("nba") || combined.includes("basketball");
+    if (!isCS && !isLoL && !isNBA) { skippedDate++; continue; }
+
+    // NBA: 根据开赛时间判断，只挂还没开赛的比赛
+    if (isNBA) {
+      const startsAt = cat.startsAt || cat.startTime || cat.scheduledStartTime || null;
+      const endsAt = cat.endsAt || null;
+      const now = new Date();
+
+      if (startsAt) {
+        const startTime = new Date(startsAt);
+        // 已经开赛了，不挂
+        if (now >= startTime) {
+          console.log(`  ⏭️ NBA已开赛: ${cat.title || ""} (开赛: ${startsAt})`);
+          skippedLive++;
+          continue;
+        }
+      } else if (endsAt) {
+        // 没有startsAt，用endsAt推断: 如果endsAt已过说明比赛结束了
+        const endTime = new Date(endsAt);
+        if (now >= endTime) {
+          console.log(`  ⏭️ NBA已结束: ${cat.title || ""} (结束: ${endsAt})`);
+          skippedLive++;
+          continue;
+        }
+      }
+    }
 
     const markets = cat.markets || [];
     for (const m of markets) {
@@ -501,6 +530,20 @@ async function main() {
       const mStatus = (m.status || "").toUpperCase();
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
+
+      // NBA额外检查: market级别的开赛时间
+      if (isNBA) {
+        const mStartsAt = m.startsAt || m.startTime || m.scheduledStartTime || null;
+        if (mStartsAt) {
+          const mStartTime = new Date(mStartsAt);
+          if (new Date() >= mStartTime) {
+            console.log(`  ⏭️ NBA市场已开赛: ${m.title || m.question || ""}`);
+            skippedLive++;
+            continue;
+          }
+        }
+      }
+
       // 跳过没有积分奖励的市场 (严格检查: current必须>0, 或schedule里有实际条目)
       const rewards = m.rewards || {};
       const currentReward = typeof rewards.current === "number" ? rewards.current : parseFloat(rewards.current || 0);
@@ -510,7 +553,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, CONFIG.MIN_BID1_ESPORTS));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isNBA ? CONFIG.MIN_BID1_NBA : CONFIG.MIN_BID1_ESPORTS));
       esportsCount++;
     }
   }
@@ -546,7 +589,7 @@ async function main() {
   }
 
   console.log(`\n✅ 共 ${monitors.length} 个市场待挂单`);
-  console.log(`   足球(今天+明天): ${footballCount} | 电竞CS/LOL(今天): ${esportsCount} | 加密FDV: ${fdvCount}`);
+  console.log(`   足球(今天+明天): ${footballCount} | 电竞CS/LOL+NBA(今天): ${esportsCount} | 加密FDV: ${fdvCount}`);
   console.log(`   跳过: ${skippedDate}非目标日期 + ${skippedLive}非OPEN`);
 
   if (monitors.length === 0) {
