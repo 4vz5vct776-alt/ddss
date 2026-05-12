@@ -292,10 +292,10 @@ class MarketMonitor {
       const obBidPrice = obData.bid1Price;
       const obAskPrice = obData.ask1Price || 999;
 
-      // ====== 严格 spread 检查: 确保挂单绝对不会被吃 ======
+      // ====== spread 检查: 确保挂单不会被吃 ======
       const spread = obAskPrice - obBidPrice;
-      if (spread < 0.02) {
-        console.log(`  ⛔ [${this.marketName}] spread=${spread.toFixed(4)} < 0.02, 跳过 (防止被吃)`);
+      if (spread < 0.01) {
+        console.log(`  ⛔ [${this.marketName}] spread=${spread.toFixed(4)} < 0.01, 跳过 (防止被吃)`);
         continue;
       }
 
@@ -430,7 +430,7 @@ async function main() {
   console.log(`足球: 挂今天+明天的比赛 + 世界杯不限日期`);
   console.log(`电竞: 只挂今天的 CS2/LOL 比赛 (不挂Dota)`);
   console.log(`加密: FDV预测市场全挂 (不限日期)`);
-  console.log(`挂单价格: 买1 (严格spread>=0.02才挂, 绝不被吃)`);
+  console.log(`挂单价格: 买1 (spread>=0.01才挂, 绝不被吃)`);
   console.log(`盘口最低: 足球≥4000 | 世界杯≥5000 | 电竞≥3000 | FDV≥3000`);
   console.log(`只挂有积分奖励的市场, LIVE不挂`);
   console.log("=".repeat(60));
