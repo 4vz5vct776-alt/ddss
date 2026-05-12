@@ -27,7 +27,10 @@ const CONFIG = {
 
   // 交易参数
   ORDER_SIZE: 5,              // 每笔5份额
-  MIN_BID1_SIZE: 5000,        // 买1低于5000份额不挂
+  MIN_BID1_FOOTBALL: 4000,    // 足球: 买1低于4000不挂
+  MIN_BID1_WORLDCUP: 5000,   // 世界杯: 买1低于5000不挂
+  MIN_BID1_FDV: 3000,        // 加密FDV: 买1低于3000不挂
+  MIN_BID1_ESPORTS: 3000,    // 电竞CS/LOL: 买1低于3000不挂
   TICK_SIZE: 0.01,            // maker保护: 挂单价 = 买1 - 0.01 (API精度限制2位小数)
 
   // 轮询/异动
@@ -214,11 +217,12 @@ async function getExistingOpenOrders() {
 // ============ 单市场监控器 ============
 
 class MarketMonitor {
-  constructor(market, categoryTitle, orderBuilder) {
+  constructor(market, categoryTitle, orderBuilder, minBid1Size) {
     this.market = market;
     this.orderBuilder = orderBuilder;
     this.marketId = market.id || market.marketId;
     this.marketName = `${(categoryTitle || "").slice(0, 25)} | ${(market.title || market.question || "").slice(0, 20)}`;
+    this.minBid1Size = minBid1Size || 5000;
 
     // 状态
     this.activeOrderId = null;
@@ -273,7 +277,7 @@ class MarketMonitor {
 
       // 用 outcome 自带的 bestBid (买1)
       const outcomeBid = outcome.bestBid;
-      if (!outcomeBid || !outcomeBid.price || outcomeBid.size < CONFIG.MIN_BID1_SIZE) continue;
+      if (!outcomeBid || !outcomeBid.price || outcomeBid.size < this.minBid1Size) continue;
 
       const obBidPrice = parseFloat(outcomeBid.price);
       const outcomeBestAsk = outcome.bestAsk;
@@ -409,7 +413,7 @@ async function main() {
   console.log(`电竞: 只挂今天的 CS2/LOL 比赛 (不挂Dota)`);
   console.log(`加密: FDV预测市场全挂 (不限日期)`);
   console.log(`Maker保护: 买1 - ${CONFIG.TICK_SIZE}`);
-  console.log(`盘口最低: ≥${CONFIG.MIN_BID1_SIZE} shares (挂买1价位)`);
+  console.log(`盘口最低: 足球≥4000 | 世界杯≥5000 | 电竞≥3000 | FDV≥3000 (挂买1价位)`);
   console.log(`只挂有积分奖励的市场, LIVE不挂`);
   console.log("=".repeat(60));
 
@@ -464,7 +468,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isWorldCup ? CONFIG.MIN_BID1_WORLDCUP : CONFIG.MIN_BID1_FOOTBALL));
       footballCount++;
     }
   }
@@ -492,7 +496,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, CONFIG.MIN_BID1_ESPORTS));
       esportsCount++;
     }
   }
@@ -516,7 +520,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, CONFIG.MIN_BID1_FDV));
       fdvCount++;
     }
   }
