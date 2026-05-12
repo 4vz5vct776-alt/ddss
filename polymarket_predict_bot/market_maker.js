@@ -28,7 +28,7 @@ const CONFIG = {
   API_URL: "https://api.predict.fun",
 
   // 交易参数
-  ORDER_SIZE: 10,         // 每个outcome挂10份额 (Yes挂10, No挂10)
+  ORDER_SIZE: 6,          // 每个outcome挂6份额 (Yes挂6, No挂6)
   TICK_SIZE: 0.01,        // (已不用于挂单偏移, 仅用于极端情况保护)
 
   // 盘口门槛 (买1挂单量低于此值不挂)
@@ -406,7 +406,7 @@ async function main() {
   console.log(`足球: 挂今天+明天的比赛 + 世界杯不限日期`);
   console.log(`电竞: 只挂今天的 CS2/LOL 比赛 (不挂Dota)`);
   console.log(`加密: FDV预测市场全挂 (不限日期)`);
-  console.log(`挂单价格: 买1 (Yes挂10, No挂10)`);
+  console.log(`挂单价格: 买1 (Yes挂6, No挂6)`);
   console.log(`盘口最低: 足球≥4000 | 世界杯≥5000 | 电竞≥3000 | FDV≥3000`);
   console.log(`只挂有积分奖励的市场, LIVE不挂`);
   console.log("=".repeat(60));
