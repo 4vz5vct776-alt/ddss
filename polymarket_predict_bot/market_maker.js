@@ -27,7 +27,7 @@ const CONFIG = {
 
   // 交易参数
   ORDER_SIZE: 5,              // 每笔5份额
-  MIN_BID1_SIZE: 1000,        // 买1低于1000份额不挂
+  MIN_BID1_SIZE: 5000,        // 买1低于5000份额不挂
   TICK_SIZE: 0.01,            // maker保护: 挂单价 = 买1 - 0.01 (API精度限制2位小数)
 
   // 轮询/异动
@@ -262,7 +262,6 @@ class MarketMonitor {
     if (this.activeOrderId) return null;
 
     const { bid1Price, bid1Size, ask1Price } = book;
-    if (bid1Size < CONFIG.MIN_BID1_SIZE) return null;
     if (bid1Price <= 0) return null;
 
     // 对每个 outcome 都尝试挂单 (Yes + No 都挂)
@@ -272,7 +271,7 @@ class MarketMonitor {
       const tokenId = String(outcome.onChainId || "");
       if (!tokenId) continue;
 
-      // 用 outcome 自带的 bestBid 价格
+      // 用 outcome 自带的 bestBid (买1)
       const outcomeBid = outcome.bestBid;
       if (!outcomeBid || !outcomeBid.price || outcomeBid.size < CONFIG.MIN_BID1_SIZE) continue;
 
@@ -280,14 +279,15 @@ class MarketMonitor {
       const outcomeBestAsk = outcome.bestAsk;
       const obAskPrice = outcomeBestAsk ? parseFloat(outcomeBestAsk.price) : 999;
 
-      // 防吃单: 挂单价 = 买1 - tick
-      let makerPrice = obBidPrice - CONFIG.TICK_SIZE;
-      if (makerPrice >= obAskPrice) {
-        makerPrice = obAskPrice - CONFIG.TICK_SIZE;
+      // 挂买1价格 (直接挂在买1价位, 不减tick)
+      // 如果买1 >= 卖1, 降到卖1以下防吃单
+      let fixedPrice = obBidPrice;
+      if (fixedPrice >= obAskPrice) {
+        fixedPrice = obAskPrice - CONFIG.TICK_SIZE;
       }
 
       // 2位小数精度
-      const fixedPrice = Math.floor(makerPrice * 100) / 100;
+      fixedPrice = Math.floor(fixedPrice * 100) / 100;
       if (fixedPrice <= 0) continue;
       if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
       if (fixedPrice >= obAskPrice) continue;
@@ -408,7 +408,8 @@ async function main() {
   console.log(`足球: 只挂明天的比赛`);
   console.log(`电竞: 只挂今天的 CS2/LOL 比赛 (不挂Dota)`);
   console.log(`Maker保护: 买1 - ${CONFIG.TICK_SIZE}`);
-  console.log(`盘口最低: ≥${CONFIG.MIN_BID1_SIZE} shares`);
+  console.log(`盘口最低: ≥${CONFIG.MIN_BID1_SIZE} shares (挂买1价位)`);
+  console.log(`只挂有积分奖励的市场, LIVE不挂`);
   console.log("=".repeat(60));
 
   // 初始化 SDK
@@ -445,6 +446,10 @@ async function main() {
     const markets = cat.markets || [];
     for (const m of markets) {
       if (m.tradingStatus !== "OPEN") { skippedLive++; continue; }
+      // 跳过没有积分奖励的市场
+      const rewards = m.rewards || {};
+      const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
+      if (!hasRewards) continue;
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
@@ -469,6 +474,10 @@ async function main() {
     const markets = cat.markets || [];
     for (const m of markets) {
       if (m.tradingStatus !== "OPEN") { skippedLive++; continue; }
+      // 跳过没有积分奖励的市场
+      const rewards = m.rewards || {};
+      const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
+      if (!hasRewards) continue;
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
