@@ -325,15 +325,19 @@ class MarketMonitor {
       if (!outcomeBid || !outcomeBid.price) continue;
       if (outcomeBid.size < this.minBid1Size) continue;
 
+      // 没有卖盘的 outcome 不挂
+      const outcomeAsk = outcome.bestAsk;
+      if (!outcomeAsk || !outcomeAsk.price) {
+        console.log(`  🚫 [${this.marketName}] ${outcome.name || ""} 无卖盘, 跳过`);
+        continue;
+      }
+
       // 检查买卖价差: 差超过0.06不挂
       const outcomeBidPrice = parseFloat(outcomeBid.price);
-      const outcomeAsk = outcome.bestAsk;
-      if (outcomeAsk && outcomeAsk.price) {
-        const askPrice = parseFloat(outcomeAsk.price);
-        if (askPrice - outcomeBidPrice > 0.06) {
-          console.log(`  ⛔ [${this.marketName}] ${outcome.name || ""} 买卖差=${(askPrice - outcomeBidPrice).toFixed(2)} > 0.06, 跳过`);
-          continue;
-        }
+      const askPrice = parseFloat(outcomeAsk.price);
+      if (askPrice - outcomeBidPrice > 0.06) {
+        console.log(`  ⛔ [${this.marketName}] ${outcome.name || ""} 买卖差=${(askPrice - outcomeBidPrice).toFixed(2)} > 0.06, 跳过`);
+        continue;
       }
 
       // 直接用该 outcome 的买1价格挂单 (保留原始精度)
@@ -467,8 +471,19 @@ class MarketMonitor {
       // 无订单 → 买1买2数量级匹配检查 + 挂单
       const { pass, threshold } = checkMagnitudeMatch(book.bid1Size, book.bid2Size);
       if (!pass) {
-        console.log(`  ⚠️ [${this.marketName}] 买1买2数量级不匹配! 买2≥${threshold}, 但买1=${book.bid1Size.toFixed(0)}<${threshold}, 不挂`);
+        console.log(`  ⚠️ [${this.marketName}] 买1买2数量级不匹配! 买2=${book.bid2Size.toFixed(0)}≥${threshold}, 但买1=${book.bid1Size.toFixed(0)}<${threshold}, 不挂`);
       } else {
+        // 同时刷新 outcomes 的 bestBid/bestAsk (用实时盘口覆盖初始快照)
+        if (this.market.outcomes && this.market.outcomes.length > 0) {
+          // 对2-outcome市场: outcome[0]用原始盘口, outcome[1]用互补
+          // 但这里我们直接用实时盘口的bid1作为参考
+          for (const outcome of this.market.outcomes) {
+            if (outcome && outcome.bestBid) {
+              // 用实时盘口数据覆盖快照的 size (price保持不变)
+              outcome.bestBid.size = book.bid1Size;
+            }
+          }
+        }
         await this.placeOrder(book);
       }
     }
