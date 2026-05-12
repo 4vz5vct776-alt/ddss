@@ -2,9 +2,10 @@
 批量快速挂单脚本 - Predict.fun 有星星的市场
 功能:
   - 获取所有有星星(有奖励积分)的市场
-  - 跳过已经开始/进行中的比赛
+  - 体育比赛: 未开赛且距开赛>30分钟 → 挂单; 已开赛或<30分钟 → 跳过
   - 每个市场以买1价格挂10份额
   - 总预算控制30U
+  - 买1买2数量级匹配检查
 
 使用:
   python3 batch_order.py
@@ -13,6 +14,8 @@
 import requests
 import logging
 import time
+import re
+from datetime import datetime, timedelta, timezone
 
 from config import (
     PREDICT_API_URL,
@@ -104,24 +107,99 @@ class PredictBatchTrader:
         if str(trading_status).upper() in live_statuses:
             return True
 
-        # 检查 marketVariant 中的比赛信息
-        variant = market.get("marketVariant", {})
-        if isinstance(variant, dict):
-            variant_type = variant.get("type", "")
-            if variant_type in ["SPORTS_MATCH", "SPORTS_TEAM_MATCH"]:
-                # 体育比赛，检查是否已开始
-                variant_data = market.get("variantData", {})
-                if isinstance(variant_data, dict):
-                    status = variant_data.get("matchStatus", "")
-                    if status.upper() in live_statuses:
-                        return True
-
         # 检查标题中是否有 "LIVE" 标记
         title = market.get("title", "") or market.get("question", "")
         if "[LIVE]" in title or "(LIVE)" in title:
             return True
 
         return False
+
+    def parse_event_start_time(self, market):
+        """
+        从市场的 description 或 categorySlug 解析开赛时间
+        返回 datetime (UTC) 或 None
+        
+        支持格式:
+          - description 中: "scheduled for May 5 at 7:45PM ET"
+          - categorySlug 中: "mlb-col-pit-2026-05-12" (只有日期，无具体时间)
+        """
+        desc = market.get("description", "") or ""
+        cat = market.get("categorySlug", "") or ""
+        
+        # 方法1: 从 description 解析 "scheduled for May 12 at 7:05PM ET"
+        # 或 "initially scheduled for May 14 at 11:00AM ET"
+        pattern = r'scheduled for (\w+ \d+)(?: at (\d+:\d+(?:AM|PM)) ET)?'
+        match = re.search(pattern, desc, re.IGNORECASE)
+        if match:
+            date_str = match.group(1)  # "May 12"
+            time_str = match.group(2)  # "7:05PM" 或 None
+            
+            # 从 categorySlug 中取年份
+            year_match = re.search(r'(\d{4})-(\d{2})-(\d{2})$', cat)
+            if year_match:
+                year = int(year_match.group(1))
+            else:
+                year = datetime.now().year
+            
+            try:
+                if time_str:
+                    dt_str = f"{date_str} {year} {time_str}"
+                    dt = datetime.strptime(dt_str, "%B %d %Y %I:%M%p")
+                else:
+                    dt_str = f"{date_str} {year}"
+                    dt = datetime.strptime(dt_str, "%B %d %Y")
+                
+                # ET = UTC-4 (EDT) 或 UTC-5 (EST)，5月份是 EDT (UTC-4)
+                et_offset = timedelta(hours=-4)
+                dt_utc = dt - et_offset  # 转为 UTC
+                return dt_utc
+            except ValueError:
+                pass
+        
+        # 方法2: 从 categorySlug 解析日期 (无具体时间，默认当天 23:59 ET)
+        date_match = re.search(r'(\d{4})-(\d{2})-(\d{2})$', cat)
+        if date_match:
+            try:
+                year = int(date_match.group(1))
+                month = int(date_match.group(2))
+                day = int(date_match.group(3))
+                # 没有具体时间，不做开赛前30分钟撤单（因为不知道具体时间）
+                return None
+            except ValueError:
+                pass
+        
+        return None
+
+    def should_skip_sports_market(self, market):
+        """
+        体育比赛市场是否应该跳过:
+        - 已开赛(LIVE) → 跳过
+        - 距开赛 ≤ 30分钟 → 跳过
+        - 距开赛 > 30分钟 → 不跳过(可以挂)
+        - 无法解析开赛时间 → 不跳过(可以挂)
+        
+        返回: (should_skip: bool, reason: str)
+        """
+        # 先检查是否已经 LIVE
+        if self.is_live_event(market):
+            return True, "已开赛"
+        
+        # 解析开赛时间
+        start_time = self.parse_event_start_time(market)
+        if start_time is None:
+            # 无法解析开赛时间，允许挂单
+            return False, ""
+        
+        now_utc = datetime.utcnow()
+        time_to_start = start_time - now_utc
+        minutes_to_start = time_to_start.total_seconds() / 60
+        
+        if minutes_to_start <= 0:
+            return True, "已开赛"
+        elif minutes_to_start <= 30:
+            return True, f"距开赛仅{minutes_to_start:.0f}分钟(<30min)"
+        else:
+            return False, ""
 
     def has_rewards(self, market):
         """判断市场是否有星星(奖励积分)"""
@@ -132,6 +210,44 @@ class PredictBatchTrader:
             current = rewards.get("current")
             schedule = rewards.get("schedule", [])
             return current is not None or len(schedule) > 0
+        return True
+
+    def _parse_bid(self, bid):
+        """解析单个 bid 的价格和数量"""
+        if isinstance(bid, dict):
+            price = float(bid.get("price", 0))
+            size = float(bid.get("size", 0))
+        elif isinstance(bid, list):
+            price = float(bid[0])
+            size = float(bid[1]) if len(bid) > 1 else 0
+        else:
+            price = float(bid)
+            size = 0
+        return price, size
+
+    def check_magnitude_match(self, bid1_size, bid2_size):
+        """
+        买1买2数量级匹配检查:
+        - 买2≥10000 则买1也要≥10000
+        - 买2≥1000 则买1也要≥1000
+        - 买2≥100 则买1也要≥100
+        - 买2≥10 则买1也要≥10
+        - 以此类推
+        不匹配则返回 False（不挂单）
+        """
+        # 从大到小检查数量级
+        thresholds = [10000, 1000, 100, 10]
+        for threshold in thresholds:
+            if bid2_size >= threshold:
+                if bid1_size < threshold:
+                    logger.warning(
+                        f"  ⚠️ 买1买2数量级不匹配! "
+                        f"买2={bid2_size:.0f}≥{threshold}, "
+                        f"但买1={bid1_size:.0f}<{threshold}, 跳过"
+                    )
+                    return False
+                return True
+        # 买2 < 10，不做限制
         return True
 
     def get_market_orderbook(self, market_id):
@@ -150,20 +266,17 @@ class PredictBatchTrader:
             bids = orderbook.get("bids", [])
 
             if bids:
-                first_bid = bids[0]
-                if isinstance(first_bid, dict):
-                    bid1_price = float(first_bid.get("price", 0))
-                    bid1_size = float(first_bid.get("size", 0))
-                elif isinstance(first_bid, list):
-                    bid1_price = float(first_bid[0])
-                    bid1_size = float(first_bid[1]) if len(first_bid) > 1 else 0
-                else:
-                    bid1_price = float(first_bid)
-                    bid1_size = 0
+                bid1_price, bid1_size = self._parse_bid(bids[0])
+
+                # 解析买2
+                bid2_size = 0
+                if len(bids) > 1:
+                    _, bid2_size = self._parse_bid(bids[1])
 
                 return {
                     "bid1_price": bid1_price,
                     "bid1_size": bid1_size,
+                    "bid2_size": bid2_size,
                     "bids": bids,
                 }
             else:
@@ -251,8 +364,17 @@ class PredictBatchTrader:
             if ONLY_WITH_REWARDS and not self.has_rewards(market):
                 continue
 
-            # 过滤: 跳过已开始的比赛
-            if SKIP_LIVE_EVENTS and self.is_live_event(market):
+            # 过滤: 跳过已开始的比赛 / 开赛前30分钟内的比赛
+            market_variant = market.get("marketVariant", "")
+            is_sports = market_variant in ["SPORTS_MATCH", "SPORTS_TEAM_MATCH"]
+            
+            if is_sports:
+                should_skip, skip_reason = self.should_skip_sports_market(market)
+                if should_skip:
+                    logger.info(f"[{i}] ⏭️ 跳过({skip_reason}): {market_name}")
+                    skip_count += 1
+                    continue
+            elif SKIP_LIVE_EVENTS and self.is_live_event(market):
                 logger.info(f"[{i}] ⏭️ 跳过(进行中): {market_name}")
                 skip_count += 1
                 continue
@@ -268,7 +390,13 @@ class PredictBatchTrader:
 
             bid1_price = book["bid1_price"]
             bid1_size = book["bid1_size"]
-            logger.info(f"  买1: {bid1_price:.4f} (量={bid1_size:.2f})")
+            bid2_size = book.get("bid2_size", 0)
+            logger.info(f"  买1: {bid1_price:.4f} (量={bid1_size:.0f}), 买2量={bid2_size:.0f}")
+
+            # 买1买2数量级匹配检查
+            if not self.check_magnitude_match(bid1_size, bid2_size):
+                skip_count += 1
+                continue
 
             # 计算这笔单花多少钱
             cost = bid1_price * ORDER_SIZE
