@@ -29,7 +29,7 @@ const CONFIG = {
   TOTAL_BUDGET: 30.0,
   ORDER_SIZE: 5,              // 每笔5份额
   MIN_BID1_SIZE: 2000,        // 买1低于2000份额不挂
-  TICK_SIZE: 0.01,            // maker保护: 挂单价 = 买1 - tick, 防吃单 (predict.fun最小tick=0.01)
+  TICK_SIZE: 0.001,           // maker保护: 挂单价 = 买1 - 0.001, 确保只做maker不吃单
   MAX_MARKETS_PER_EVENT: 1,   // 同一父事件最多挂几个子市场 (防重复)
 
   // 轮询/异动
@@ -65,7 +65,7 @@ const CRYPTO_SHORT_KEYWORDS = [
 
 const CRYPTO_KEYWORDS = [
   "bitcoin", "btc", "ethereum", "eth", "crypto", "sol", "solana",
-  "bnb", "xrp", "doge", "ada", "avax", "matic", "dot", "token", "defi",
+  "bnb", "xrp", "doge", "ada", "avax", "matic", "dot", "defi",
 ];
 
 const POLITICAL_KEYWORDS = [
@@ -132,7 +132,10 @@ function isCryptoShortTerm(market) {
   const combined = `${market.title || ""} ${market.category || ""} ${(market.tags || []).join(" ")}`.toLowerCase();
   const isCrypto = CRYPTO_KEYWORDS.some(kw => combined.includes(kw));
   if (!isCrypto) return false;
-  return CRYPTO_SHORT_KEYWORDS.some(kw => combined.includes(kw));
+  // 只过滤明确包含短期时间关键词的加密市场
+  // 标题中必须同时包含加密关键词+短期关键词才算短期盘
+  const title = (market.title || "").toLowerCase();
+  return CRYPTO_SHORT_KEYWORDS.some(kw => title.includes(kw));
 }
 
 function isPoliticalEvent(market) {
@@ -489,8 +492,39 @@ class MarketMonitor {
     const book = await getFullOrderbook(this.marketId);
     if (!book) return;
 
-    // 注意: 不再主动查 getOrderStatus (会误判导致重复挂单)
-    // 挂单后只通过异动检测来管理, 不主动清空 activeOrderId
+    // ===== Bug1+3+10 修复: 检查活跃订单状态 =====
+    // 只在有activeOrderId时查状态; null返回值=网络问题，跳过不处理
+    // 明确非OPEN状态 → 订单已被吃或取消 → TG报警
+    if (this.activeOrderId) {
+      const status = await getOrderStatus(this.activeOrderId);
+      if (status === null) {
+        // API返回null = 网络异常/超时，保持现状不动，防止误清activeOrderId
+        // 不清空activeOrderId，下一轮再查
+        return;
+      }
+      if (status === "OPEN") {
+        // 正常挂单中，继续异动检测
+      } else if (status === "MATCHED" || status === "FILLED" || status === "EXECUTED") {
+        // 挂单被吃! 立刻TG报警
+        console.log(`  🔔 [${this.marketName}] 挂单被吃! 状态=${status}`);
+        await sendTelegram(
+          `🔔 <b>挂单被吃!</b>\n\n📊 市场: ${this.marketName}\n📈 方向: ${this.activeSide}\n🆔 订单: ${this.activeOrderId}\n📋 状态: ${status}\n⛔ 该市场已停止挂单`
+        );
+        this.isFilled = true;
+        this.activeOrderId = null;
+        this.activeSide = null;
+        return;
+      } else if (status === "CANCELLED" || status === "EXPIRED" || status === "REJECTED") {
+        // 订单被系统取消/过期，清空后重挂
+        console.log(`  ⚠️ [${this.marketName}] 订单已失效 状态=${status}, 准备重挂`);
+        this.activeOrderId = null;
+        this.activeSide = null;
+        // 继续往下走到"无活跃单→选边挂单"逻辑
+      } else {
+        // 未知状态，保守跳过
+        return;
+      }
+    }
 
     // 体育/电竞: Polymarket 异动检测
     if (this.marketType === "sports" || this.marketType === "esports") {
@@ -543,7 +577,8 @@ async function main() {
   console.log(`每笔份额: ${CONFIG.ORDER_SIZE}`);
   console.log(`总预算: ${CONFIG.TOTAL_BUDGET} USDB`);
   console.log(`盘口最低: 买1≥${CONFIG.MIN_BID1_SIZE} shares`);
-  console.log(`Maker保护: 买1 - ${CONFIG.TICK_SIZE} (防吃单)`);
+  console.log(`Maker保护: 买1 - ${CONFIG.TICK_SIZE} (严格低于卖1, 确保只做maker)`);
+  console.log(`市场扫描: 最多10页(1000个市场)`);
   console.log("=".repeat(60));
 
   // 检查私钥
@@ -567,11 +602,11 @@ async function main() {
   });
   console.log("SDK 初始化成功!\n");
 
-  // 获取市场 (分页获取前500个，覆盖所有活跃市场)
+  // 获取市场 (分页获取前1000个，覆盖所有活跃市场包括NBA/电竞)
   console.log("🔍 扫描可交易市场...");
   let allMarkets = [];
   const pageSize = 100;
-  const maxPages = 5; // 最多5页=500个市场
+  const maxPages = 10; // 最多10页=1000个市场, 覆盖NBA/电竞等所有类别
   for (let page = 0; page < maxPages; page++) {
     const params = new URLSearchParams({ status: "OPEN", first: String(pageSize), skip: String(page * pageSize), hasActiveRewards: "true" });
     const marketsData = await fetchAPI(`/v1/markets?${params}`);
