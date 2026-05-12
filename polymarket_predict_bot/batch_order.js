@@ -100,21 +100,37 @@ async function getOrderbook(marketId) {
   const data = await fetchAPI(`/v1/markets/${marketId}/orderbook`);
   const orderbook = data.data || data;
   const bids = orderbook.bids || [];
+  const asks = orderbook.asks || [];
+
   if (bids.length === 0) return null;
 
   const firstBid = bids[0];
-  let price, size;
+  let bidPrice, bidSize;
   if (Array.isArray(firstBid)) {
-    price = parseFloat(firstBid[0]);
-    size = parseFloat(firstBid[1] || 0);
+    bidPrice = parseFloat(firstBid[0]);
+    bidSize = parseFloat(firstBid[1] || 0);
   } else if (typeof firstBid === "object") {
-    price = parseFloat(firstBid.price || 0);
-    size = parseFloat(firstBid.size || 0);
+    bidPrice = parseFloat(firstBid.price || 0);
+    bidSize = parseFloat(firstBid.size || 0);
   } else {
-    price = parseFloat(firstBid);
-    size = 0;
+    bidPrice = parseFloat(firstBid);
+    bidSize = 0;
   }
-  return { price, size };
+
+  // 解析 ask1
+  let askPrice = 1.0; // 默认无卖盘时设为1
+  if (asks.length > 0) {
+    const firstAsk = asks[0];
+    if (Array.isArray(firstAsk)) {
+      askPrice = parseFloat(firstAsk[0]);
+    } else if (typeof firstAsk === "object") {
+      askPrice = parseFloat(firstAsk.price || 1.0);
+    } else {
+      askPrice = parseFloat(firstAsk);
+    }
+  }
+
+  return { price: bidPrice, size: bidSize, askPrice };
 }
 
 // ============ 判断是否进行中 ============
@@ -263,7 +279,20 @@ async function main() {
       continue;
     }
 
-    console.log(`  买1: ${book.price.toFixed(4)} (量=${book.size.toFixed(2)})`);
+    console.log(`  买1: ${book.price.toFixed(4)} (量=${book.size.toFixed(2)}), 卖1: ${book.askPrice.toFixed(4)}`);
+
+    // 严格 spread 检查: 确保挂单不会直接被吃
+    const spread = book.askPrice - book.price;
+    if (spread < 0.01) {
+      console.log(`  ⛔ 跳过: spread=${spread.toFixed(4)} < 0.01, 挂单会被直接吃掉!`);
+      skipCount++;
+      continue;
+    }
+    if (book.price >= book.askPrice) {
+      console.log(`  ⛔ 跳过: bid(${book.price}) >= ask(${book.askPrice}), 市场异常!`);
+      skipCount++;
+      continue;
+    }
 
     // 计算花费
     const cost = book.price * CONFIG.ORDER_SIZE;
