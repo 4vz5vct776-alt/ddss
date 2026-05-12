@@ -405,8 +405,9 @@ async function main() {
   const today = getTodayUTC();
   const tomorrow = getTomorrowUTC();
   console.log(`今天: ${today} | 明天: ${tomorrow}`);
-  console.log(`足球: 只挂明天的比赛`);
+  console.log(`足球: 挂今天+明天的比赛 + 世界杯不限日期`);
   console.log(`电竞: 只挂今天的 CS2/LOL 比赛 (不挂Dota)`);
+  console.log(`加密: FDV预测市场全挂 (不限日期)`);
   console.log(`Maker保护: 买1 - ${CONFIG.TICK_SIZE}`);
   console.log(`盘口最低: ≥${CONFIG.MIN_BID1_SIZE} shares (挂买1价位)`);
   console.log(`只挂有积分奖励的市场, LIVE不挂`);
@@ -433,20 +434,25 @@ async function main() {
   const esportsCategories = await fetchSportsCategories("SPORTS_TEAM_MATCH");
   console.log(`  共 ${esportsCategories.length} 个电竞/NBA事件`);
 
+  // ===== 获取加密FDV市场 (DEFAULT) =====
+  console.log("🔍 获取加密FDV市场 (DEFAULT)...");
+  const defaultCategories = await fetchSportsCategories("DEFAULT");
+  console.log(`  共 ${defaultCategories.length} 个DEFAULT事件`);
+
   // ===== 筛选日期 + 创建监控器 =====
   const monitors = [];
   const seenMarketIds = new Set();
   let footballCount = 0, esportsCount = 0, skippedDate = 0, skippedLive = 0;
 
-  // 足球: 只挂明天 + 世界杯不限日期
+  // 足球: 挂今天+明天 + 世界杯不限日期
   for (const cat of footballCategories) {
     const eventDate = getEventDate(cat);
     const catSlug = (cat.categorySlug || cat.slug || "").toLowerCase();
     const catTitle = (cat.title || "").toLowerCase();
     const isWorldCup = catSlug.includes("world-cup") || catSlug.includes("worldcup") || catTitle.includes("world cup") || catTitle.includes("世界杯");
     
-    // 世界杯不限日期，其他足球只挂明天
-    if (!isWorldCup && (!eventDate || eventDate !== tomorrow)) { skippedDate++; continue; }
+    // 世界杯不限日期，其他足球只挂今天+明天
+    if (!isWorldCup && (!eventDate || (eventDate !== today && eventDate !== tomorrow))) { skippedDate++; continue; }
 
     const markets = cat.markets || [];
     for (const m of markets) {
@@ -491,8 +497,32 @@ async function main() {
     }
   }
 
+  // 加密FDV: slug/title含"fdv"的都挂 (不限日期)
+  let fdvCount = 0;
+  for (const cat of defaultCategories) {
+    const catSlug = (cat.categorySlug || cat.slug || "").toLowerCase();
+    const catTitle = (cat.title || "").toLowerCase();
+    const catDesc = (cat.description || "").toLowerCase();
+    const isFDV = catSlug.includes("fdv") || catTitle.includes("fdv") || catDesc.includes("fully diluted valuation");
+    if (!isFDV) continue;
+
+    const markets = cat.markets || [];
+    for (const m of markets) {
+      if (m.tradingStatus !== "OPEN") { skippedLive++; continue; }
+      // 跳过没有积分奖励的市场
+      const rewards = m.rewards || {};
+      const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
+      if (!hasRewards) continue;
+      const mid = m.id || m.marketId;
+      if (seenMarketIds.has(mid)) continue;
+      seenMarketIds.add(mid);
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder));
+      fdvCount++;
+    }
+  }
+
   console.log(`\n✅ 共 ${monitors.length} 个市场待挂单`);
-  console.log(`   足球(明天): ${footballCount} | 电竞CS/LOL(今天): ${esportsCount}`);
+  console.log(`   足球(今天+明天): ${footballCount} | 电竞CS/LOL(今天): ${esportsCount} | 加密FDV: ${fdvCount}`);
   console.log(`   跳过: ${skippedDate}非目标日期 + ${skippedLive}非OPEN`);
 
   if (monitors.length === 0) {
