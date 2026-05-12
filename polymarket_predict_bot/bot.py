@@ -201,10 +201,34 @@ def run_bot():
                             continue
                         recover_time = 0
 
-                    # 用当前买1价格挂单
+                    # 严格检查 spread 条件，确认不会被吃单
                     bid1_price = orderbook["best_bid"]
+                    ask1_price = orderbook["best_ask"]
+                    spread = ask1_price - bid1_price
+
+                    # 条件1: spread 必须 > 0（ask 必须严格大于 bid）
+                    # 条件2: spread 至少 0.01（1分钱），防止挂上去瞬间被吃
+                    if spread < 0.01:
+                        logger.warning(
+                            f"⛔ Spread 过小，拒绝挂单! "
+                            f"bid1={bid1_price:.4f}, ask1={ask1_price:.4f}, "
+                            f"spread={spread:.4f} < 0.01"
+                        )
+                        time.sleep(POLL_INTERVAL)
+                        continue
+
+                    # 条件3: 买1价格不能 >= ask1（否则直接成交）
+                    if bid1_price >= ask1_price:
+                        logger.warning(
+                            f"⛔ bid >= ask，市场异常，拒绝挂单! "
+                            f"bid1={bid1_price:.4f}, ask1={ask1_price:.4f}"
+                        )
+                        time.sleep(POLL_INTERVAL)
+                        continue
+
+                    # 所有条件通过，挂买1价格
                     logger.info(
-                        f"✅ 盘口安全，挂单: "
+                        f"✅ 盘口安全 (spread={spread:.4f}), 挂单: "
                         f"{ORDER_SIDE} @ {bid1_price:.4f} x {ORDER_SIZE}"
                     )
                     result = trader.create_order(
