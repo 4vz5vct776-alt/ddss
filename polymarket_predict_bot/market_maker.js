@@ -496,10 +496,12 @@ async function main() {
     const isCS = combined.includes("cs2") || combined.includes("csgo") || combined.includes("counter-strike");
     const isLoL = combined.includes("lol") || combined.includes("league of legends");
     const isNBA = combined.includes("nba") || combined.includes("basketball");
-    if (!isCS && !isLoL && !isNBA) { skippedDate++; continue; }
+    const isMLB = combined.includes("mlb") || combined.includes("baseball");
+    if (!isCS && !isLoL && !isNBA && !isMLB) { skippedDate++; continue; }
 
-    // NBA: 根据开赛时间判断，只挂还没开赛的比赛
-    if (isNBA) {
+    // NBA/MLB: 根据开赛时间判断，只挂还没开赛的比赛
+    if (isNBA || isMLB) {
+      const label = isNBA ? "NBA" : "MLB";
       const startsAt = cat.startsAt || cat.startTime || cat.scheduledStartTime || null;
       const endsAt = cat.endsAt || null;
       const now = new Date();
@@ -508,7 +510,7 @@ async function main() {
         const startTime = new Date(startsAt);
         // 已经开赛了，不挂
         if (now >= startTime) {
-          console.log(`  ⏭️ NBA已开赛: ${cat.title || ""} (开赛: ${startsAt})`);
+          console.log(`  ⏭️ ${label}已开赛: ${cat.title || ""} (开赛: ${startsAt})`);
           skippedLive++;
           continue;
         }
@@ -516,7 +518,7 @@ async function main() {
         // 没有startsAt，用endsAt推断: 如果endsAt已过说明比赛结束了
         const endTime = new Date(endsAt);
         if (now >= endTime) {
-          console.log(`  ⏭️ NBA已结束: ${cat.title || ""} (结束: ${endsAt})`);
+          console.log(`  ⏭️ ${label}已结束: ${cat.title || ""} (结束: ${endsAt})`);
           skippedLive++;
           continue;
         }
@@ -531,13 +533,13 @@ async function main() {
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
 
-      // NBA额外检查: market级别的开赛时间
-      if (isNBA) {
+      // NBA/MLB额外检查: market级别的开赛时间
+      if (isNBA || isMLB) {
         const mStartsAt = m.startsAt || m.startTime || m.scheduledStartTime || null;
         if (mStartsAt) {
           const mStartTime = new Date(mStartsAt);
           if (new Date() >= mStartTime) {
-            console.log(`  ⏭️ NBA市场已开赛: ${m.title || m.question || ""}`);
+            console.log(`  ⏭️ ${isNBA ? "NBA" : "MLB"}市场已开赛: ${m.title || m.question || ""}`);
             skippedLive++;
             continue;
           }
@@ -553,7 +555,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isNBA ? CONFIG.MIN_BID1_NBA : CONFIG.MIN_BID1_ESPORTS));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isNBA ? CONFIG.MIN_BID1_NBA : isMLB ? CONFIG.MIN_BID1_MLB : CONFIG.MIN_BID1_ESPORTS));
       esportsCount++;
     }
   }
