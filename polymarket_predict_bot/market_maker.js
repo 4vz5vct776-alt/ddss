@@ -709,7 +709,29 @@ async function main() {
   // 主循环
   console.log("🚀 开始做市循环...\n");
 
+  const REFRESH_INTERVAL = 30 * 60 * 1000; // 每30分钟全撤重挂
+  let lastRefreshTime = Date.now();
+
   while (running) {
+    // 每30分钟: 全部撤单 → 重新挂单
+    if (Date.now() - lastRefreshTime >= REFRESH_INTERVAL) {
+      console.log("\n🔄 30分钟到，全部撤单重新挂...");
+      let cancelCount = 0;
+      for (const monitor of monitors) {
+        if (monitor.activeOrderId) {
+          await cancelOrder(monitor.activeOrderId);
+          monitor.activeOrderId = null;
+          monitor.activeSide = null;
+          cancelCount++;
+        }
+        // 重置状态，允许重新挂单（但保留 isFilled 和 isExpired）
+        monitor.lastBid1Size = null;
+        monitor.isCoolingDown = false;
+      }
+      console.log(`  撤销 ${cancelCount} 笔，等待下轮重新挂单`);
+      lastRefreshTime = Date.now();
+    }
+
     for (const monitor of monitors) {
       if (!running) break;
       try {
