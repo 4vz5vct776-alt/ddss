@@ -149,55 +149,7 @@ function getEventDate(category) {
  * 像 fl1-rcl-psg-2026-05-13 这种没积分的市场会被跳过
  */
 function hasValidRewards(market, category = null) {
-  // 如果明确标记为 false → 无积分
-  if (market.hasActiveRewards === false) return false;
-  
-  // 如果明确标记为 true → 有积分
-  if (market.hasActiveRewards === true) return true;
-  
-  // category 级别标记
-  if (category && category.hasActiveRewards === false) return false;
-  if (category && category.hasActiveRewards === true) return true;
-  
-  // rewards 对象检查 (只排除明确为空的情况)
-  const rewards = market.rewards;
-  if (rewards && typeof rewards === "object") {
-    const currentReward = typeof rewards.current === "number" 
-      ? rewards.current 
-      : parseFloat(rewards.current || 0);
-    if (currentReward > 0) return true;
-    
-    if (Array.isArray(rewards.schedule) && rewards.schedule.length > 0) return true;
-    
-    const rewardsRate = parseFloat(rewards.rate || rewards.multiplier || 0);
-    if (rewardsRate > 0) return true;
-  }
-  
-  // 市场顶层字段
-  const rewardRate = parseFloat(market.rewardRate || 0);
-  const pointsMultiplier = parseFloat(market.pointsMultiplier || 0);
-  const rewardsMultiplier = parseFloat(market.rewardsMultiplier || 0);
-  if (rewardRate > 0 || pointsMultiplier > 0 || rewardsMultiplier > 0) return true;
-  
-  // category rewards
-  if (category) {
-    const catRewards = category.rewards;
-    if (catRewards && typeof catRewards === "object") {
-      const catCurrent = parseFloat(catRewards.current || 0);
-      if (catCurrent > 0) return true;
-      if (Array.isArray(catRewards.schedule) && catRewards.schedule.length > 0) return true;
-    }
-    const catRate = parseFloat(category.rewardRate || category.pointsMultiplier || 0);
-    if (catRate > 0) return true;
-  }
-  
-  // 没有明确标记 → 默认允许 (宽松模式, 依赖API的hasActiveRewards过滤)
-  // 只有从categories API获取且没有rewards信息的才跳过
-  if (!rewards && !market.rewardRate && !market.pointsMultiplier) {
-    if (category && !category.rewards && !category.hasActiveRewards) return false;
-  }
-  
-  // 不确定的情况 → 默认允许挂
+  // 不做积分过滤，全部允许挂单
   return true;
 }
 
