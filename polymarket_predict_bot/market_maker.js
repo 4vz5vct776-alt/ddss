@@ -190,13 +190,17 @@ async function getOrderbook(marketId) {
 function checkMagnitudeMatch(bid1Total, bid2Total) {
   /**
    * 用 Total (price * size) 比较数量级:
-   * 买2 Total ≥ 10000 则买1 Total 也要 ≥ 10000
-   * 买2 Total ≥ 1000 则买1 Total 也要 ≥ 1000
-   * 买2 Total ≥ 100 则买1 Total 也要 ≥ 100
-   * 买2 Total ≥ 10 则买1 Total 也要 ≥ 10
+   * 1. 买1 Total < 1000 → 直接不挂 (最低门槛)
+   * 2. 买2 Total ≥ 10000 则买1 Total 也要 ≥ 10000
+   * 3. 买2 Total ≥ 1000 则买1 Total 也要 ≥ 1000
    * 不匹配返回 false（不挂单）
    */
-  const thresholds = [10000, 1000, 100, 10];
+  // 最低门槛: 买1 Total 必须 ≥ 1000
+  if (bid1Total < 1000) {
+    return { pass: false, threshold: 1000, reason: "bid1Total<1000" };
+  }
+  // 买2存在时做对齐检查
+  const thresholds = [10000, 1000];
   for (const threshold of thresholds) {
     if (bid2Total >= threshold) {
       if (bid1Total < threshold) {
@@ -205,7 +209,7 @@ function checkMagnitudeMatch(bid1Total, bid2Total) {
       return { pass: true, threshold };
     }
   }
-  // 买2 Total < 10，不做限制
+  // 买2 Total < 1000，只要买1≥1000就通过
   return { pass: true, threshold: 0 };
 }
 
@@ -348,10 +352,10 @@ class MarketMonitor {
       }
 
       // 买1买2 Total 数量级对齐 (用实时盘口 book 数据)
-      if (book && book.bid2Total > 0) {
+      {
         const { pass, threshold } = checkMagnitudeMatch(book.bid1Total, book.bid2Total);
         if (!pass) {
-          console.log(`  ⚠️ [${this.marketName}] ${outcome.name || ""} Total不匹配! 买2T=${book.bid2Total.toFixed(0)}≥${threshold}, 买1T=${book.bid1Total.toFixed(0)}<${threshold}, 跳过`);
+          console.log(`  ⚠️ [${this.marketName}] ${outcome.name || ""} Total不匹配! 买1T=${book.bid1Total.toFixed(0)}, 买2T=${book.bid2Total.toFixed(0)}, 门槛=${threshold}, 跳过`);
           continue;
         }
       }
@@ -487,7 +491,7 @@ class MarketMonitor {
       // 无订单 → 买1买2 Total 数量级匹配检查 + 挂单
       const { pass, threshold } = checkMagnitudeMatch(book.bid1Total, book.bid2Total);
       if (!pass) {
-        console.log(`  ⚠️ [${this.marketName}] 买1买2 Total不匹配! 买2Total=${book.bid2Total.toFixed(0)}≥${threshold}, 但买1Total=${book.bid1Total.toFixed(0)}<${threshold}, 不挂`);
+        console.log(`  ⚠️ [${this.marketName}] Total不匹配! 买1T=${book.bid1Total.toFixed(0)}, 买2T=${book.bid2Total.toFixed(0)}, 门槛=${threshold}, 不挂`);
       } else {
         // 同时刷新 outcomes 的 bestBid/bestAsk (用实时盘口覆盖初始快照)
         if (this.market.outcomes && this.market.outcomes.length > 0) {
