@@ -26,7 +26,7 @@ const CONFIG = {
   API_URL: "https://api.predict.fun",
 
   // 交易参数
-  ORDER_SIZE: 5,              // 每笔5份额
+  ORDER_SIZE: 6,              // 每笔6份额
   MIN_BID1_FOOTBALL: 4000,    // 足球: 买1低于4000不挂
   MIN_BID1_WORLDCUP: 5000,   // 世界杯: 买1低于5000不挂
   MIN_BID1_FDV: 3000,        // 加密FDV: 买1低于3000不挂
