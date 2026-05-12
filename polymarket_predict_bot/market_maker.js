@@ -28,7 +28,7 @@ const CONFIG = {
   API_URL: "https://api.predict.fun",
 
   // 交易参数
-  ORDER_SIZE: 20,         // 每个市场挂20份额
+  ORDER_SIZE: 10,         // 每个outcome挂10份额 (Yes挂10, No挂10)
   TICK_SIZE: 0.01,        // (已不用于挂单偏移, 仅用于极端情况保护)
 
   // 盘口门槛 (买1挂单量低于此值不挂)
@@ -270,49 +270,25 @@ class MarketMonitor {
   async placeOrder(book) {
     if (this.activeOrderId) return null;
 
-    const { bid1Price, bid1Size, ask1Price } = book;
-    if (bid1Price <= 0) return null;
-
-    // 对每个 outcome 都尝试挂单 (Yes + No 都挂)
+    // 对每个 outcome 都尝试挂单 (Yes + No 各挂10)
     const outcomes = this.market.outcomes || [];
     for (const outcome of outcomes) {
       if (!outcome) continue;
       const tokenId = String(outcome.onChainId || "");
       if (!tokenId) continue;
 
-      // 用 outcome 的 bestBid 严格检查门槛
+      // 用 outcome 自己的 bestBid 作为买1价格
       const outcomeBid = outcome.bestBid;
-      if (!outcomeBid || !outcomeBid.price || outcomeBid.size < this.minBid1Size) continue;
+      if (!outcomeBid || !outcomeBid.price) continue;
+      if (outcomeBid.size < this.minBid1Size) continue;
 
-      // 实时查询该市场的盘口获取精确买1
-      const obData = await getOrderbook(this.marketId);
-      if (!obData || obData.bid1Price <= 0) continue;
-      if (obData.bid1Size < this.minBid1Size) continue;
-
-      const obBidPrice = obData.bid1Price;
-      const obAskPrice = obData.ask1Price || 999;
-
-      // ====== spread 检查: 确保挂单不会被吃 ======
-      const spread = obAskPrice - obBidPrice;
-      if (spread < 0.01) {
-        console.log(`  ⛔ [${this.marketName}] spread=${spread.toFixed(4)} < 0.01, 跳过 (防止被吃)`);
-        continue;
-      }
-
-      // 挂买1价格 (spread足够宽, 安全)
-      let fixedPrice = obBidPrice;
-
-      // 极端保护: 如果买1 >= 卖1, 绝对不挂
-      if (fixedPrice >= obAskPrice) {
-        console.log(`  ⛔ [${this.marketName}] bid(${fixedPrice}) >= ask(${obAskPrice}), 跳过`);
-        continue;
-      }
+      // 直接用该 outcome 的买1价格挂单
+      let fixedPrice = parseFloat(outcomeBid.price);
 
       // 2位小数精度
       fixedPrice = Math.floor(fixedPrice * 100) / 100;
       if (fixedPrice <= 0) continue;
       if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
-      if (fixedPrice >= obAskPrice) continue;
 
       try {
         const priceWei = BigInt(Math.floor(fixedPrice * 1e18));
@@ -355,7 +331,7 @@ class MarketMonitor {
 
         const result = await fetchAPI("/v1/orders", { method: "POST", body: JSON.stringify(body) });
         const orderId = result.data?.orderId || result.orderId || null;
-        console.log(`  ✅ [${this.marketName}] 挂单 BUY ${outcome.name || ""} @ ${fixedPrice.toFixed(2)} (spread=${spread.toFixed(4)}), id=${orderId}`);
+        console.log(`  ✅ [${this.marketName}] 挂单 BUY ${outcome.name || ""} @ ${fixedPrice.toFixed(2)}, id=${orderId}`);
         // 记录第一个成功的订单用于状态跟踪
         if (!this.activeOrderId) {
           this.activeOrderId = orderId;
@@ -430,7 +406,7 @@ async function main() {
   console.log(`足球: 挂今天+明天的比赛 + 世界杯不限日期`);
   console.log(`电竞: 只挂今天的 CS2/LOL 比赛 (不挂Dota)`);
   console.log(`加密: FDV预测市场全挂 (不限日期)`);
-  console.log(`挂单价格: 买1 (spread>=0.01才挂, 绝不被吃)`);
+  console.log(`挂单价格: 买1 (Yes挂10, No挂10)`);
   console.log(`盘口最低: 足球≥4000 | 世界杯≥5000 | 电竞≥3000 | FDV≥3000`);
   console.log(`只挂有积分奖励的市场, LIVE不挂`);
   console.log("=".repeat(60));
