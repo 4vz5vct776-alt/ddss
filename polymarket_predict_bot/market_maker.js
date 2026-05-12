@@ -27,7 +27,7 @@ const CONFIG = {
 
   // 交易参数
   ORDER_SIZE: 5,              // 每笔5份额
-  MIN_BID1_SIZE: 500,         // 买1低于500份额不挂 (体育/电竞盘口深度较浅)
+  MIN_BID1_SIZE: 1000,        // 买1低于1000份额不挂
   TICK_SIZE: 0.01,            // maker保护: 挂单价 = 买1 - 0.01 (API精度限制2位小数)
 
   // 轮询/异动
@@ -265,74 +265,85 @@ class MarketMonitor {
     if (bid1Size < CONFIG.MIN_BID1_SIZE) return null;
     if (bid1Price <= 0) return null;
 
-    // 获取 token ID (买 Yes 方向, indexSet=1)
+    // 对每个 outcome 都尝试挂单 (Yes + No 都挂)
     const outcomes = this.market.outcomes || [];
-    const outcome = outcomes[0]; // 第一个 outcome (主队/Yes)
-    if (!outcome) return null;
-    const tokenId = String(outcome.onChainId || "");
-    if (!tokenId) return null;
+    for (const outcome of outcomes) {
+      if (!outcome) continue;
+      const tokenId = String(outcome.onChainId || "");
+      if (!tokenId) continue;
 
-    // 防吃单: 挂单价 = 买1 - tick
-    let makerPrice = bid1Price - CONFIG.TICK_SIZE;
-    if (makerPrice >= ask1Price) {
-      makerPrice = ask1Price - CONFIG.TICK_SIZE;
-    }
+      // 用 outcome 自带的 bestBid 价格
+      const outcomeBid = outcome.bestBid;
+      if (!outcomeBid || !outcomeBid.price || outcomeBid.size < CONFIG.MIN_BID1_SIZE) continue;
 
-    // 2位小数精度
-    const fixedPrice = Math.floor(makerPrice * 100) / 100;
-    if (fixedPrice <= 0) return null;
-    if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) return null;
-    if (fixedPrice >= ask1Price) return null;
+      const obBidPrice = parseFloat(outcomeBid.price);
+      const outcomeBestAsk = outcome.bestAsk;
+      const obAskPrice = outcomeBestAsk ? parseFloat(outcomeBestAsk.price) : 999;
 
-    try {
-      const priceWei = BigInt(Math.floor(fixedPrice * 1e18));
-      const quantityWei = BigInt(CONFIG.ORDER_SIZE) * BigInt(1e18);
-
-      const { makerAmount, takerAmount, pricePerShare } = this.orderBuilder.getLimitOrderAmounts({
-        side: Side.BUY,
-        pricePerShareWei: priceWei,
-        quantityWei: quantityWei,
-      });
-
-      const order = this.orderBuilder.buildOrder("LIMIT", {
-        side: Side.BUY,
-        tokenId: tokenId,
-        makerAmount,
-        takerAmount,
-        nonce: 0n,
-        feeRateBps: this.market.feeRateBps || 200,
-      });
-
-      const isNegRisk = this.market.isNegRisk || false;
-      const isYieldBearing = this.market.isYieldBearing || false;
-      const typedData = this.orderBuilder.buildTypedData(order, { isNegRisk, isYieldBearing });
-      const signedOrder = await this.orderBuilder.signTypedDataOrder(typedData);
-      const hash = this.orderBuilder.buildTypedDataHash(typedData);
-
-      const serializableOrder = {};
-      for (const [key, value] of Object.entries(signedOrder)) {
-        serializableOrder[key] = typeof value === "bigint" ? value.toString() : value;
+      // 防吃单: 挂单价 = 买1 - tick
+      let makerPrice = obBidPrice - CONFIG.TICK_SIZE;
+      if (makerPrice >= obAskPrice) {
+        makerPrice = obAskPrice - CONFIG.TICK_SIZE;
       }
-      serializableOrder.hash = hash;
 
-      const body = {
-        data: {
-          order: serializableOrder,
-          pricePerShare: typeof pricePerShare === "bigint" ? pricePerShare.toString() : pricePerShare,
-          strategy: "LIMIT",
-        },
-      };
+      // 2位小数精度
+      const fixedPrice = Math.floor(makerPrice * 100) / 100;
+      if (fixedPrice <= 0) continue;
+      if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
+      if (fixedPrice >= obAskPrice) continue;
 
-      const result = await fetchAPI("/v1/orders", { method: "POST", body: JSON.stringify(body) });
-      const orderId = result.data?.orderId || result.orderId || null;
-      console.log(`  ✅ [${this.marketName}] 挂单 BUY @ ${fixedPrice.toFixed(2)}, id=${orderId}`);
-      this.activeOrderId = orderId;
-      this.activeSide = "BUY";
-      return orderId;
-    } catch (e) {
-      console.error(`  ❌ [${this.marketName}] 挂单失败: ${e.message}`);
-      return null;
+      try {
+        const priceWei = BigInt(Math.floor(fixedPrice * 1e18));
+        const quantityWei = BigInt(CONFIG.ORDER_SIZE) * BigInt(1e18);
+
+        const { makerAmount, takerAmount, pricePerShare } = this.orderBuilder.getLimitOrderAmounts({
+          side: Side.BUY,
+          pricePerShareWei: priceWei,
+          quantityWei: quantityWei,
+        });
+
+        const order = this.orderBuilder.buildOrder("LIMIT", {
+          side: Side.BUY,
+          tokenId: tokenId,
+          makerAmount,
+          takerAmount,
+          nonce: 0n,
+          feeRateBps: this.market.feeRateBps || 200,
+        });
+
+        const isNegRisk = this.market.isNegRisk || false;
+        const isYieldBearing = this.market.isYieldBearing || false;
+        const typedData = this.orderBuilder.buildTypedData(order, { isNegRisk, isYieldBearing });
+        const signedOrder = await this.orderBuilder.signTypedDataOrder(typedData);
+        const hash = this.orderBuilder.buildTypedDataHash(typedData);
+
+        const serializableOrder = {};
+        for (const [key, value] of Object.entries(signedOrder)) {
+          serializableOrder[key] = typeof value === "bigint" ? value.toString() : value;
+        }
+        serializableOrder.hash = hash;
+
+        const body = {
+          data: {
+            order: serializableOrder,
+            pricePerShare: typeof pricePerShare === "bigint" ? pricePerShare.toString() : pricePerShare,
+            strategy: "LIMIT",
+          },
+        };
+
+        const result = await fetchAPI("/v1/orders", { method: "POST", body: JSON.stringify(body) });
+        const orderId = result.data?.orderId || result.orderId || null;
+        console.log(`  ✅ [${this.marketName}] 挂单 BUY ${outcome.name || ""} @ ${fixedPrice.toFixed(2)}, id=${orderId}`);
+        // 记录第一个成功的订单用于状态跟踪
+        if (!this.activeOrderId) {
+          this.activeOrderId = orderId;
+          this.activeSide = "BUY";
+        }
+      } catch (e) {
+        console.error(`  ❌ [${this.marketName}] ${outcome.name || ""} 挂单失败: ${e.message}`);
+      }
     }
+    return this.activeOrderId;
   }
 
   async tick() {
