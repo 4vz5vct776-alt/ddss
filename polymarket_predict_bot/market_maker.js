@@ -142,7 +142,7 @@ async function getOrderbook(marketId) {
     const ob = data.data || data;
 
     const bids = ob.bids || [];
-    let bid1Price = 0, bid1Size = 0, bid2Size = 0;
+    let bid1Price = 0, bid1Size = 0, bid2Price = 0, bid2Size = 0;
     if (bids.length > 0) {
       const b = bids[0];
       if (typeof b === "object" && !Array.isArray(b)) {
@@ -156,11 +156,17 @@ async function getOrderbook(marketId) {
     if (bids.length > 1) {
       const b2 = bids[1];
       if (typeof b2 === "object" && !Array.isArray(b2)) {
+        bid2Price = parseFloat(b2.price || 0);
         bid2Size = parseFloat(b2.size || 0);
       } else if (Array.isArray(b2)) {
+        bid2Price = parseFloat(b2[0] || 0);
         bid2Size = parseFloat(b2[1] || 0);
       }
     }
+
+    // Total = price * size (用于数量级匹配)
+    const bid1Total = bid1Price * bid1Size;
+    const bid2Total = bid2Price * bid2Size;
 
     const asks = ob.asks || [];
     let ask1Price = 999;
@@ -173,32 +179,33 @@ async function getOrderbook(marketId) {
       }
     }
 
-    return { bid1Price, bid1Size, bid2Size, ask1Price, hasAsks: asks.length > 0 };
+    return { bid1Price, bid1Size, bid2Size, bid1Total, bid2Total, ask1Price, hasAsks: asks.length > 0 };
   } catch (e) {
     return null;
   }
 }
 
-// ============ 买1买2数量级匹配检查 ============
+// ============ 买1买2 Total 数量级匹配检查 ============
 
-function checkMagnitudeMatch(bid1Size, bid2Size) {
+function checkMagnitudeMatch(bid1Total, bid2Total) {
   /**
-   * 买2≥10000 则买1也要≥10000
-   * 买2≥1000 则买1也要≥1000
-   * 买2≥100 则买1也要≥100
-   * 买2≥10 则买1也要≥10
+   * 用 Total (price * size) 比较数量级:
+   * 买2 Total ≥ 10000 则买1 Total 也要 ≥ 10000
+   * 买2 Total ≥ 1000 则买1 Total 也要 ≥ 1000
+   * 买2 Total ≥ 100 则买1 Total 也要 ≥ 100
+   * 买2 Total ≥ 10 则买1 Total 也要 ≥ 10
    * 不匹配返回 false（不挂单）
    */
   const thresholds = [10000, 1000, 100, 10];
   for (const threshold of thresholds) {
-    if (bid2Size >= threshold) {
-      if (bid1Size < threshold) {
+    if (bid2Total >= threshold) {
+      if (bid1Total < threshold) {
         return { pass: false, threshold };
       }
       return { pass: true, threshold };
     }
   }
-  // 买2 < 10，不做限制
+  // 买2 Total < 10，不做限制
   return { pass: true, threshold: 0 };
 }
 
@@ -468,10 +475,10 @@ class MarketMonitor {
         return;
       }
     } else {
-      // 无订单 → 买1买2数量级匹配检查 + 挂单
-      const { pass, threshold } = checkMagnitudeMatch(book.bid1Size, book.bid2Size);
+      // 无订单 → 买1买2 Total 数量级匹配检查 + 挂单
+      const { pass, threshold } = checkMagnitudeMatch(book.bid1Total, book.bid2Total);
       if (!pass) {
-        console.log(`  ⚠️ [${this.marketName}] 买1买2数量级不匹配! 买2=${book.bid2Size.toFixed(0)}≥${threshold}, 但买1=${book.bid1Size.toFixed(0)}<${threshold}, 不挂`);
+        console.log(`  ⚠️ [${this.marketName}] 买1买2 Total不匹配! 买2Total=${book.bid2Total.toFixed(0)}≥${threshold}, 但买1Total=${book.bid1Total.toFixed(0)}<${threshold}, 不挂`);
       } else {
         // 同时刷新 outcomes 的 bestBid/bestAsk (用实时盘口覆盖初始快照)
         if (this.market.outcomes && this.market.outcomes.length > 0) {
