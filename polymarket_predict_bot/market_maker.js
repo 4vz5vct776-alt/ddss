@@ -347,6 +347,15 @@ class MarketMonitor {
         continue;
       }
 
+      // 买1买2 Total 数量级对齐 (用实时盘口 book 数据)
+      if (book && book.bid2Total > 0) {
+        const { pass, threshold } = checkMagnitudeMatch(book.bid1Total, book.bid2Total);
+        if (!pass) {
+          console.log(`  ⚠️ [${this.marketName}] ${outcome.name || ""} Total不匹配! 买2T=${book.bid2Total.toFixed(0)}≥${threshold}, 买1T=${book.bid1Total.toFixed(0)}<${threshold}, 跳过`);
+          continue;
+        }
+      }
+
       // 直接用该 outcome 的买1价格挂单 (保留原始精度)
       const fixedPrice = outcomeBidPrice;
       if (fixedPrice <= 0 || isNaN(fixedPrice)) continue;
