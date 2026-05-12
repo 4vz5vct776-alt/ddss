@@ -43,7 +43,7 @@ const CONFIG = {
 
   // 时间
   POLL_INTERVAL: 3000,      // 轮询间隔 3秒
-  RECOVER_WAIT: 10000,      // 异动后冷却 10秒
+  RECOVER_WAIT: 60000,      // 异动后冷却 60秒(1分钟)，冷却后重新检查买1是否符合条件再挂
 
   // Telegram
   TELEGRAM_BOT_TOKEN: "8739215233:AAHwG7G60sgOYze9Jo0u-KddtP0UBxDjnKg",
