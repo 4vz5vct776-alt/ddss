@@ -467,11 +467,12 @@ async function main() {
       const mStatus = (m.status || "").toUpperCase();
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
-      // 跳过没有积分奖励的市场
+      // 跳过没有积分奖励的市场 (严格检查: current必须>0, 或schedule里有实际条目)
       const rewards = m.rewards || {};
-      const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
-      const rewardRate = m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0;
-      if (!hasRewards && rewardRate <= 0) continue;
+      const currentReward = typeof rewards.current === "number" ? rewards.current : parseFloat(rewards.current || 0);
+      const hasSchedule = Array.isArray(rewards.schedule) && rewards.schedule.length > 0;
+      const rewardRate = parseFloat(m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0);
+      if (currentReward <= 0 && !hasSchedule && rewardRate <= 0) continue;
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
@@ -500,11 +501,12 @@ async function main() {
       const mStatus = (m.status || "").toUpperCase();
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
-      // 跳过没有积分奖励的市场
+      // 跳过没有积分奖励的市场 (严格检查: current必须>0, 或schedule里有实际条目)
       const rewards = m.rewards || {};
-      const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
-      const rewardRate = m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0;
-      if (!hasRewards && rewardRate <= 0) continue;
+      const currentReward = typeof rewards.current === "number" ? rewards.current : parseFloat(rewards.current || 0);
+      const hasSchedule = Array.isArray(rewards.schedule) && rewards.schedule.length > 0;
+      const rewardRate = parseFloat(m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0);
+      if (currentReward <= 0 && !hasSchedule && rewardRate <= 0) continue;
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
@@ -529,11 +531,12 @@ async function main() {
       const mStatus = (m.status || "").toUpperCase();
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
-      // 跳过没有积分奖励的市场
+      // 跳过没有积分奖励的市场 (严格检查: current必须>0, 或schedule里有实际条目)
       const rewards = m.rewards || {};
-      const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
-      const rewardRate = m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0;
-      if (!hasRewards && rewardRate <= 0) continue;
+      const currentReward = typeof rewards.current === "number" ? rewards.current : parseFloat(rewards.current || 0);
+      const hasSchedule = Array.isArray(rewards.schedule) && rewards.schedule.length > 0;
+      const rewardRate = parseFloat(m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0);
+      if (currentReward <= 0 && !hasSchedule && rewardRate <= 0) continue;
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
