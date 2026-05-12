@@ -438,10 +438,15 @@ async function main() {
   const seenMarketIds = new Set();
   let footballCount = 0, esportsCount = 0, skippedDate = 0, skippedLive = 0;
 
-  // 足球: 只挂明天
+  // 足球: 只挂明天 + 世界杯不限日期
   for (const cat of footballCategories) {
     const eventDate = getEventDate(cat);
-    if (!eventDate || eventDate !== tomorrow) { skippedDate++; continue; }
+    const catSlug = (cat.categorySlug || cat.slug || "").toLowerCase();
+    const catTitle = (cat.title || "").toLowerCase();
+    const isWorldCup = catSlug.includes("world-cup") || catSlug.includes("worldcup") || catTitle.includes("world cup") || catTitle.includes("世界杯");
+    
+    // 世界杯不限日期，其他足球只挂明天
+    if (!isWorldCup && (!eventDate || eventDate !== tomorrow)) { skippedDate++; continue; }
 
     const markets = cat.markets || [];
     for (const m of markets) {
