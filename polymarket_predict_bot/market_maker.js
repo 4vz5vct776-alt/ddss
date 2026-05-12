@@ -29,7 +29,7 @@ const CONFIG = {
   TOTAL_BUDGET: 30.0,
   ORDER_SIZE: 5,              // 每笔5份额
   MIN_BID1_SIZE: 2000,        // 买1低于2000份额不挂
-  TICK_SIZE: 0.001,           // maker保护: 挂单价 = 买1 - 0.001, 确保只做maker不吃单
+  TICK_SIZE: 0.01,            // maker保护: 挂单价 = 买1 - 0.01, 确保只做maker不吃单 (API精度限制2位小数)
   MAX_MARKETS_PER_EVENT: 1,   // 同一父事件最多挂几个子市场 (防重复)
 
   // 轮询/异动
@@ -407,8 +407,8 @@ class MarketMonitor {
       console.log(`  ⚠️ [${this.marketName}] spread=0! 买1=${price.toFixed(3)} >= 卖1=${ask1.toFixed(3)}, 降价到 ${makerPrice.toFixed(3)}`);
     }
 
-    // 价格精度修正: 最多3位小数 (向下取整)
-    const fixedPrice = Math.floor(makerPrice * 1000) / 1000;
+    // 价格精度修正: 最多2位小数 (API限制, 向下取整)
+    const fixedPrice = Math.floor(makerPrice * 100) / 100;
     if (fixedPrice <= 0) return null;
 
     // 最低订单价值检查: price * ORDER_SIZE >= 0.9
