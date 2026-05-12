@@ -35,10 +35,10 @@ const CONFIG = {
   MIN_BID1_FOOTBALL: 4000,
   MIN_BID1_WORLDCUP: 5000,
   MIN_BID1_ESPORTS: 3000,
-  MIN_BID1_FDV: 500,
+  MIN_BID1_FDV: 2000,
 
   // 异动检测
-  BID1_DROP_PERCENT: 0.5,   // 买1减少50%触发撤单
+  BID1_DROP_PERCENT: 0.3,   // 买1减少30%触发撤单
   BID1_MIN_SIZE: 50,        // 买1低于此量触发撤单
 
   // 时间
@@ -498,7 +498,7 @@ async function main() {
     const catSlug = (cat.categorySlug || cat.slug || "").toLowerCase();
     const catTitle = (cat.title || "").toLowerCase();
     const catDesc = (cat.description || "").toLowerCase();
-    const isFDV = catSlug.includes("fdv") || catTitle.includes("fdv") || catDesc.includes("fully diluted valuation");
+    const isFDV = catSlug.includes("fdv") || catTitle.includes("fdv") || catDesc.includes("fully diluted valuation") || catSlug.includes("polymarket") || catTitle.includes("polymarket");
     if (!isFDV) continue;
 
     const markets = cat.markets || [];
