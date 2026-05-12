@@ -275,7 +275,11 @@ class MarketMonitor {
       const tokenId = String(outcome.onChainId || "");
       if (!tokenId) continue;
 
-      // 实时查询该outcome的盘口 (用买1价挂单)
+      // 用 outcome 的 bestBid 严格检查门槛
+      const outcomeBid = outcome.bestBid;
+      if (!outcomeBid || !outcomeBid.price || outcomeBid.size < this.minBid1Size) continue;
+
+      // 实时查询该市场的盘口获取精确买1
       const obData = await getOrderbook(this.marketId);
       if (!obData || obData.bid1Price <= 0) continue;
       if (obData.bid1Size < this.minBid1Size) continue;
@@ -283,9 +287,8 @@ class MarketMonitor {
       const obBidPrice = obData.bid1Price;
       const obAskPrice = obData.ask1Price || 999;
 
-      // 挂买1价格 (直接挂在买1价位, 不减tick)
-      // 如果买1 >= 卖1, 降到卖1以下防吃单
-      let fixedPrice = obBidPrice;
+      // 挂买1 - 0.01 (确保只做maker, 不被吃)
+      let fixedPrice = obBidPrice - CONFIG.TICK_SIZE;
       if (fixedPrice >= obAskPrice) {
         fixedPrice = obAskPrice - CONFIG.TICK_SIZE;
       }
@@ -370,7 +373,7 @@ class MarketMonitor {
       if (status === null) return; // 网络问题,跳过
       if (status === "OPEN") {
         // 正常,检查异动
-      } else if (status === "MATCHED" || status === "FILLED" || status === "EXECUTED") {
+      } else if (status === "MATCHED" || status === "FILLED" || status === "EXECUTED" || status === "PARTIALLY_FILLED" || status === "CLOSED") {
         console.log(`  🔔 [${this.marketName}] 挂单被吃! 状态=${status}`);
         await sendTelegram(`🔔 <b>挂单被吃!</b>\n\n📊 ${this.marketName}\n🆔 ${this.activeOrderId}\n📋 ${status}`);
         this.isFilled = true;
