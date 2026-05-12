@@ -28,7 +28,7 @@ const CONFIG = {
   // 交易参数
   TOTAL_BUDGET: 30.0,
   ORDER_SIZE: 5,              // 每笔5份额
-  MIN_BID1_SIZE: 2000,        // 买1低于2000份额不挂
+  MIN_BID1_SIZE: 1000,        // 买1低于1000份额不挂
   TICK_SIZE: 0.01,            // maker保护: 挂单价 = 买1 - 0.01, 确保只做maker不吃单 (API精度限制2位小数)
   MAX_MARKETS_PER_EVENT: 1,   // 同一父事件最多挂几个子市场 (防重复)
 
