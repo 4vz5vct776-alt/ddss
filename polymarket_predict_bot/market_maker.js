@@ -35,6 +35,7 @@ const CONFIG = {
   MIN_BID1_FOOTBALL: 4000,
   MIN_BID1_WORLDCUP: 5000,
   MIN_BID1_ESPORTS: 3000,
+  MIN_BID1_NBA: 3000,
   MIN_BID1_FDV: 2000,
 
   // 异动检测
@@ -164,7 +165,7 @@ async function getOrderbook(marketId) {
       }
     }
 
-    return { bid1Price, bid1Size, ask1Price };
+    return { bid1Price, bid1Size, ask1Price, hasAsks: asks.length > 0 };
   } catch (e) {
     return null;
   }
@@ -229,6 +230,13 @@ class MarketMonitor {
     this.marketName = `${(categoryTitle || "").slice(0, 25)} | ${(market.title || market.question || "").slice(0, 20)}`;
     this.minBid1Size = minBid1Size || 5000;
 
+    // 开赛时间 (用于开赛前30分钟撤单)
+    this.startsAt = null;
+    const catStartsAt = market.startsAt || market.startTime || market.scheduledStartTime || null;
+    if (catStartsAt) {
+      this.startsAt = new Date(catStartsAt);
+    }
+
     // 状态
     this.activeOrderId = null;
     this.activeSide = null;
@@ -236,6 +244,7 @@ class MarketMonitor {
     this.isCoolingDown = false;
     this.cooldownStart = 0;
     this.isFilled = false;
+    this.isExpired = false; // 开赛前30分钟标记为过期
   }
 
   checkAnomaly(book) {
@@ -269,6 +278,9 @@ class MarketMonitor {
 
   async placeOrder(book) {
     if (this.activeOrderId) return null;
+
+    // 没有卖盘 = 市场已结束，不挂
+    if (!book.hasAsks) return null;
 
     // 对每个 outcome 都尝试挂单 (Yes + No 各挂10)
     const outcomes = this.market.outcomes || [];
@@ -354,6 +366,22 @@ class MarketMonitor {
 
   async tick() {
     if (this.isFilled) return;
+    if (this.isExpired) return;
+
+    // 开赛前30分钟自动撤单 (NBA/MLB)
+    if (this.startsAt) {
+      const now = new Date();
+      const thirtyMinBefore = new Date(this.startsAt.getTime() - 30 * 60 * 1000);
+      if (now >= thirtyMinBefore) {
+        if (this.activeOrderId) {
+          console.log(`  ⏰ [${this.marketName}] 开赛前30分钟，自动撤单!`);
+          await this.cancelActiveOrder();
+          await sendTelegram(`⏰ <b>开赛前30分钟撤单</b>\n\n📊 ${this.marketName}`);
+        }
+        this.isExpired = true;
+        return;
+      }
+    }
 
     // 冷却期
     if (this.isCoolingDown) {
@@ -365,6 +393,16 @@ class MarketMonitor {
     // 获取盘口
     const book = await getOrderbook(this.marketId);
     if (!book) return;
+
+    // 没有卖盘(Ask) = 市场已结束，撤单并停止
+    if (!book.hasAsks) {
+      if (this.activeOrderId) {
+        console.log(`  🚫 [${this.marketName}] 没有卖盘，市场已结束，撤单!`);
+        await this.cancelActiveOrder();
+      }
+      this.isExpired = true;
+      return;
+    }
 
     // 检查订单状态
     if (this.activeOrderId) {
@@ -481,18 +519,45 @@ async function main() {
     }
   }
 
-  // 电竞/NBA: 只挂今天的, 只挂CS和LOL (不挂Dota)
+  // 电竞/NBA/MLB: 只挂今天的, 挂CS/LOL/NBA/MLB (不挂Dota/板球)
   for (const cat of esportsCategories) {
     const eventDate = getEventDate(cat);
     if (!eventDate || eventDate !== today) { skippedDate++; continue; }
 
-    // 只挂 CS2/CSGO 和 LOL, 跳过 Dota
+    // 挂 CS2/CSGO、LOL、NBA、MLB, 跳过 Dota/板球等
     const catTitle = (cat.title || "").toLowerCase();
     const catDesc = (cat.description || "").toLowerCase();
-    const combined = catTitle + " " + catDesc;
+    const catSlug = (cat.categorySlug || cat.slug || "").toLowerCase();
+    const combined = catTitle + " " + catDesc + " " + catSlug;
     const isCS = combined.includes("cs2") || combined.includes("csgo") || combined.includes("counter-strike");
     const isLoL = combined.includes("lol") || combined.includes("league of legends");
-    if (!isCS && !isLoL) { skippedDate++; continue; }
+    const isNBA = combined.includes("nba") || combined.includes("basketball");
+    const isMLB = combined.includes("mlb") || combined.includes("baseball");
+    if (!isCS && !isLoL && !isNBA && !isMLB) { skippedDate++; continue; }
+
+    // NBA/MLB: 根据开赛时间判断，只挂还没开赛的比赛
+    if (isNBA || isMLB) {
+      const label = isNBA ? "NBA" : "MLB";
+      const startsAt = cat.startsAt || cat.startTime || cat.scheduledStartTime || null;
+      const endsAt = cat.endsAt || null;
+      const now = new Date();
+
+      if (startsAt) {
+        const startTime = new Date(startsAt);
+        if (now >= startTime) {
+          console.log(`  ⏭️ ${label}已开赛: ${cat.title || ""} (开赛: ${startsAt})`);
+          skippedLive++;
+          continue;
+        }
+      } else if (endsAt) {
+        const endTime = new Date(endsAt);
+        if (now >= endTime) {
+          console.log(`  ⏭️ ${label}已结束: ${cat.title || ""} (结束: ${endsAt})`);
+          skippedLive++;
+          continue;
+        }
+      }
+    }
 
     const markets = cat.markets || [];
     for (const m of markets) {
@@ -510,7 +575,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, CONFIG.MIN_BID1_ESPORTS));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isNBA ? CONFIG.MIN_BID1_NBA : CONFIG.MIN_BID1_ESPORTS));
       esportsCount++;
     }
   }
@@ -546,7 +611,7 @@ async function main() {
   }
 
   console.log(`\n✅ 共 ${monitors.length} 个市场待挂单`);
-  console.log(`   足球(今天+明天): ${footballCount} | 电竞CS/LOL(今天): ${esportsCount} | 加密FDV: ${fdvCount}`);
+  console.log(`   足球(今天+明天): ${footballCount} | 电竞CS/LOL+NBA/MLB(今天): ${esportsCount} | 加密FDV: ${fdvCount}`);
   console.log(`   跳过: ${skippedDate}非目标日期 + ${skippedLive}非OPEN`);
 
   if (monitors.length === 0) {
