@@ -35,7 +35,7 @@ const CONFIG = {
   MIN_BID1_FOOTBALL: 4000,
   MIN_BID1_WORLDCUP: 5000,
   MIN_BID1_ESPORTS: 3000,
-  MIN_BID1_FDV: 3000,
+  MIN_BID1_FDV: 500,
 
   // 异动检测
   BID1_DROP_PERCENT: 0.5,   // 买1减少50%触发撤单
@@ -282,12 +282,9 @@ class MarketMonitor {
       if (!outcomeBid || !outcomeBid.price) continue;
       if (outcomeBid.size < this.minBid1Size) continue;
 
-      // 直接用该 outcome 的买1价格挂单
-      let fixedPrice = parseFloat(outcomeBid.price);
-
-      // 2位小数精度
-      fixedPrice = Math.floor(fixedPrice * 100) / 100;
-      if (fixedPrice <= 0) continue;
+      // 直接用该 outcome 的买1价格挂单 (保留原始精度)
+      const fixedPrice = parseFloat(outcomeBid.price);
+      if (fixedPrice <= 0 || isNaN(fixedPrice)) continue;
       if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
 
       try {
