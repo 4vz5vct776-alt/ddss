@@ -142,7 +142,7 @@ async function getOrderbook(marketId) {
     const ob = data.data || data;
 
     const bids = ob.bids || [];
-    let bid1Price = 0, bid1Size = 0;
+    let bid1Price = 0, bid1Size = 0, bid2Size = 0;
     if (bids.length > 0) {
       const b = bids[0];
       if (typeof b === "object" && !Array.isArray(b)) {
@@ -151,6 +151,14 @@ async function getOrderbook(marketId) {
       } else if (Array.isArray(b)) {
         bid1Price = parseFloat(b[0] || 0);
         bid1Size = parseFloat(b[1] || 0);
+      }
+    }
+    if (bids.length > 1) {
+      const b2 = bids[1];
+      if (typeof b2 === "object" && !Array.isArray(b2)) {
+        bid2Size = parseFloat(b2.size || 0);
+      } else if (Array.isArray(b2)) {
+        bid2Size = parseFloat(b2[1] || 0);
       }
     }
 
@@ -165,10 +173,33 @@ async function getOrderbook(marketId) {
       }
     }
 
-    return { bid1Price, bid1Size, ask1Price, hasAsks: asks.length > 0 };
+    return { bid1Price, bid1Size, bid2Size, ask1Price, hasAsks: asks.length > 0 };
   } catch (e) {
     return null;
   }
+}
+
+// ============ 买1买2数量级匹配检查 ============
+
+function checkMagnitudeMatch(bid1Size, bid2Size) {
+  /**
+   * 买2≥10000 则买1也要≥10000
+   * 买2≥1000 则买1也要≥1000
+   * 买2≥100 则买1也要≥100
+   * 买2≥10 则买1也要≥10
+   * 不匹配返回 false（不挂单）
+   */
+  const thresholds = [10000, 1000, 100, 10];
+  for (const threshold of thresholds) {
+    if (bid2Size >= threshold) {
+      if (bid1Size < threshold) {
+        return { pass: false, threshold };
+      }
+      return { pass: true, threshold };
+    }
+  }
+  // 买2 < 10，不做限制
+  return { pass: true, threshold: 0 };
 }
 
 // ============ 撤单 ============
@@ -223,7 +254,7 @@ async function getExistingOpenOrders() {
 // ============ 单市场监控器 ============
 
 class MarketMonitor {
-  constructor(market, categoryTitle, orderBuilder, minBid1Size) {
+  constructor(market, categoryTitle, orderBuilder, minBid1Size, categoryStartsAt) {
     this.market = market;
     this.orderBuilder = orderBuilder;
     this.marketId = market.id || market.marketId;
@@ -232,7 +263,7 @@ class MarketMonitor {
 
     // 开赛时间 (用于开赛前30分钟撤单)
     this.startsAt = null;
-    const catStartsAt = market.startsAt || market.startTime || market.scheduledStartTime || null;
+    const catStartsAt = categoryStartsAt || market.startsAt || market.startTime || market.scheduledStartTime || null;
     if (catStartsAt) {
       this.startsAt = new Date(catStartsAt);
     }
@@ -433,8 +464,13 @@ class MarketMonitor {
         return;
       }
     } else {
-      // 无订单 → 挂单
-      await this.placeOrder(book);
+      // 无订单 → 买1买2数量级匹配检查 + 挂单
+      const { pass, threshold } = checkMagnitudeMatch(book.bid1Size, book.bid2Size);
+      if (!pass) {
+        console.log(`  ⚠️ [${this.marketName}] 买1买2数量级不匹配! 买2≥${threshold}, 但买1=${book.bid1Size.toFixed(0)}<${threshold}, 不挂`);
+      } else {
+        await this.placeOrder(book);
+      }
     }
   }
 }
@@ -514,7 +550,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isWorldCup ? CONFIG.MIN_BID1_WORLDCUP : CONFIG.MIN_BID1_FOOTBALL));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isWorldCup ? CONFIG.MIN_BID1_WORLDCUP : CONFIG.MIN_BID1_FOOTBALL, cat.startsAt));
       footballCount++;
     }
   }
@@ -575,7 +611,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isNBA ? CONFIG.MIN_BID1_NBA : CONFIG.MIN_BID1_ESPORTS));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isNBA ? CONFIG.MIN_BID1_NBA : CONFIG.MIN_BID1_ESPORTS, cat.startsAt));
       esportsCount++;
     }
   }
@@ -605,7 +641,7 @@ async function main() {
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
-      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, CONFIG.MIN_BID1_FDV));
+      monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, CONFIG.MIN_BID1_FDV, cat.startsAt));
       fdvCount++;
     }
   }
