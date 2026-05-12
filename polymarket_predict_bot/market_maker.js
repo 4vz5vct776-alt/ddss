@@ -275,13 +275,13 @@ class MarketMonitor {
       const tokenId = String(outcome.onChainId || "");
       if (!tokenId) continue;
 
-      // 用 outcome 自带的 bestBid (买1)
-      const outcomeBid = outcome.bestBid;
-      if (!outcomeBid || !outcomeBid.price || outcomeBid.size < this.minBid1Size) continue;
+      // 实时查询该outcome的盘口 (用买1价挂单)
+      const obData = await getOrderbook(this.marketId);
+      if (!obData || obData.bid1Price <= 0) continue;
+      if (obData.bid1Size < this.minBid1Size) continue;
 
-      const obBidPrice = parseFloat(outcomeBid.price);
-      const outcomeBestAsk = outcome.bestAsk;
-      const obAskPrice = outcomeBestAsk ? parseFloat(outcomeBestAsk.price) : 999;
+      const obBidPrice = obData.bid1Price;
+      const obAskPrice = obData.ask1Price || 999;
 
       // 挂买1价格 (直接挂在买1价位, 不减tick)
       // 如果买1 >= 卖1, 降到卖1以下防吃单
