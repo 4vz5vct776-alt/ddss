@@ -282,8 +282,19 @@ class MarketMonitor {
       if (!outcomeBid || !outcomeBid.price) continue;
       if (outcomeBid.size < this.minBid1Size) continue;
 
+      // 检查买卖价差: 差超过0.06不挂
+      const outcomeBidPrice = parseFloat(outcomeBid.price);
+      const outcomeAsk = outcome.bestAsk;
+      if (outcomeAsk && outcomeAsk.price) {
+        const askPrice = parseFloat(outcomeAsk.price);
+        if (askPrice - outcomeBidPrice > 0.06) {
+          console.log(`  ⛔ [${this.marketName}] ${outcome.name || ""} 买卖差=${(askPrice - outcomeBidPrice).toFixed(2)} > 0.06, 跳过`);
+          continue;
+        }
+      }
+
       // 直接用该 outcome 的买1价格挂单 (保留原始精度)
-      const fixedPrice = parseFloat(outcomeBid.price);
+      const fixedPrice = outcomeBidPrice;
       if (fixedPrice <= 0 || isNaN(fixedPrice)) continue;
       if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
 
@@ -451,11 +462,16 @@ async function main() {
 
     const markets = cat.markets || [];
     for (const m of markets) {
-      if (m.tradingStatus !== "OPEN") { skippedLive++; continue; }
+      // 严格排除LIVE和非OPEN的市场
+      const tStatus = (m.tradingStatus || "").toUpperCase();
+      const mStatus = (m.status || "").toUpperCase();
+      const mState = (m.state || "").toUpperCase();
+      if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
       // 跳过没有积分奖励的市场
       const rewards = m.rewards || {};
       const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
-      if (!hasRewards) continue;
+      const rewardRate = m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0;
+      if (!hasRewards && rewardRate <= 0) continue;
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
@@ -479,11 +495,16 @@ async function main() {
 
     const markets = cat.markets || [];
     for (const m of markets) {
-      if (m.tradingStatus !== "OPEN") { skippedLive++; continue; }
+      // 严格排除LIVE和非OPEN的市场
+      const tStatus = (m.tradingStatus || "").toUpperCase();
+      const mStatus = (m.status || "").toUpperCase();
+      const mState = (m.state || "").toUpperCase();
+      if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
       // 跳过没有积分奖励的市场
       const rewards = m.rewards || {};
       const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
-      if (!hasRewards) continue;
+      const rewardRate = m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0;
+      if (!hasRewards && rewardRate <= 0) continue;
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
@@ -503,11 +524,16 @@ async function main() {
 
     const markets = cat.markets || [];
     for (const m of markets) {
-      if (m.tradingStatus !== "OPEN") { skippedLive++; continue; }
+      // 严格排除LIVE和非OPEN的市场
+      const tStatus = (m.tradingStatus || "").toUpperCase();
+      const mStatus = (m.status || "").toUpperCase();
+      const mState = (m.state || "").toUpperCase();
+      if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
       // 跳过没有积分奖励的市场
       const rewards = m.rewards || {};
       const hasRewards = (rewards.current) || (rewards.schedule && rewards.schedule.length > 0);
-      if (!hasRewards) continue;
+      const rewardRate = m.rewardRate || m.pointsMultiplier || m.rewardsMultiplier || 0;
+      if (!hasRewards && rewardRate <= 0) continue;
       const mid = m.id || m.marketId;
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
