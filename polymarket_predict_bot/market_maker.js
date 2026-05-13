@@ -582,6 +582,15 @@ class MarketMonitor {
         }
       }
 
+      // 孤单检测: 买1只剩我一个人，立刻撤
+      if (book.bid1Size <= CONFIG.ORDER_SIZE * 1.5) {
+        console.log(`  🏃 [${this.marketName}] 买1只剩${book.bid1Size.toFixed(0)}(≈我的${CONFIG.ORDER_SIZE}), 危险撤单!`);
+        await this.cancelActiveOrder();
+        this.isCoolingDown = true;
+        this.cooldownStart = Date.now();
+        return;
+      }
+
       // 卖压检测: 卖1量远大于买1量
       if (this.checkSellPressure(book)) {
         await sendTelegram(`⚠️ <b>卖压撤单!</b>\n\n📊 ${this.marketName}\n📉 卖1量远大于买1量`);
