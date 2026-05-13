@@ -634,6 +634,12 @@ async function main() {
       const mStatus = (m.status || "").toUpperCase();
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
+      // 市场级别再次检查开赛时间，已开赛的绝对不挂
+      const mStartsAt = m.startsAt || m.startTime || m.scheduledStartTime || null;
+      if (mStartsAt) {
+        const mStartTime = new Date(mStartsAt);
+        if (new Date() >= mStartTime) { skippedLive++; continue; }
+      }
       // 跳过没有积分奖励的市场 (严格检查: current必须>0, 或schedule里有实际条目)
       const rewards = m.rewards || {};
       const currentReward = typeof rewards.current === "number" ? rewards.current : parseFloat(rewards.current || 0);
@@ -695,6 +701,12 @@ async function main() {
       const mStatus = (m.status || "").toUpperCase();
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
+      // 市场级别再次检查开赛时间，已开赛的绝对不挂
+      const mStartsAt = m.startsAt || m.startTime || m.scheduledStartTime || null;
+      if (mStartsAt) {
+        const mStartTime = new Date(mStartsAt);
+        if (new Date() >= mStartTime) { skippedLive++; continue; }
+      }
       // 跳过没有积分奖励的市场 (严格检查: current必须>0, 或schedule里有实际条目)
       const rewards = m.rewards || {};
       const currentReward = typeof rewards.current === "number" ? rewards.current : parseFloat(rewards.current || 0);
