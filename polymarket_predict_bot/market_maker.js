@@ -582,9 +582,9 @@ class MarketMonitor {
         }
       }
 
-      // 孤单检测: 买1只剩我一个人，立刻撤
-      if (book.bid1Size <= CONFIG.ORDER_SIZE * 1.5) {
-        console.log(`  🏃 [${this.marketName}] 买1只剩${book.bid1Size.toFixed(0)}(≈我的${CONFIG.ORDER_SIZE}), 危险撤单!`);
+      // 孤单检测: 买1量太少，危险撤单
+      if (book.bid1Size < 1000) {
+        console.log(`  🏃 [${this.marketName}] 买1量只有${book.bid1Size.toFixed(0)}(<1000), 危险撤单!`);
         await this.cancelActiveOrder();
         this.isCoolingDown = true;
         this.cooldownStart = Date.now();
