@@ -491,13 +491,18 @@ class MarketMonitor {
     // 检查订单状态
     const status = await getOrderStatus(this.activeOrderId);
     if (status === null) return; // 网络问题,跳过
-    if (status === "MATCHED" || status === "FILLED" || status === "EXECUTED" || status === "PARTIALLY_FILLED" || status === "CLOSED") {
+    // 打印订单状态用于调试
+    if (status !== "OPEN") {
+      console.log(`  🔍 [${this.marketName}] 订单状态: ${status} (id=${this.activeOrderId})`);
+    }
+    if (status === "MATCHED" || status === "FILLED" || status === "EXECUTED" || status === "PARTIALLY_FILLED" || status === "CLOSED" || status === "TRADING") {
       console.log(`  🔔 [${this.marketName}] 挂单被吃! 状态=${status}`);
       await sendTelegram(`🔔 <b>挂单被吃!</b>\n\n📊 ${this.marketName}\n🆔 ${this.activeOrderId}\n📋 ${status}`);
       this.isFilled = true;
       this.activeOrderId = null;
       return;
     } else if (status === "CANCELLED" || status === "EXPIRED" || status === "REJECTED") {
+      console.log(`  ❎ [${this.marketName}] 订单已取消/过期: ${status}`);
       this.activeOrderId = null;
       this.activeSide = null;
       return;
