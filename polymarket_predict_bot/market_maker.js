@@ -705,10 +705,23 @@ async function main() {
     }
   }
 
-  // 电竞/NBA/MLB: 只挂今天的, 挂CS/LOL/NBA/MLB (不挂Dota/板球)
+  // 电竞/NBA/MLB: CS/LOL只挂今天, NBA/MLB挂今天+明天 (不挂Dota/板球)
   for (const cat of esportsCategories) {
     const eventDate = getEventDate(cat);
-    if (!eventDate || eventDate !== today) { skippedDate++; continue; }
+
+    // 先判断是否NBA/MLB (需要挂今天+明天)
+    const catTitlePre = (cat.title || "").toLowerCase();
+    const catSlugPre = (cat.categorySlug || cat.slug || "").toLowerCase();
+    const combinedPre = catTitlePre + " " + catSlugPre;
+    const isNBAPre = combinedPre.includes("nba") || combinedPre.includes("basketball");
+    const isMLBPre = combinedPre.includes("mlb") || combinedPre.includes("baseball");
+
+    // NBA/MLB: 挂今天+明天; 电竞: 只挂今天
+    if (isNBAPre || isMLBPre) {
+      if (!eventDate || (eventDate !== today && eventDate !== tomorrow)) { skippedDate++; continue; }
+    } else {
+      if (!eventDate || eventDate !== today) { skippedDate++; continue; }
+    }
 
     // 挂 CS2/CSGO、LOL、NBA、MLB, 跳过 Dota/板球等
     const catTitle = (cat.title || "").toLowerCase();
