@@ -410,7 +410,8 @@ class MarketMonitor {
 
     // 执行挂单
     for (const op of orderPrices) {
-      const fixedPrice = op.placePrice;
+      // API要求价格最多2位小数，强制round
+      const fixedPrice = Math.round(op.placePrice * 100) / 100;
       if (fixedPrice <= 0 || isNaN(fixedPrice)) continue;
       if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
 
