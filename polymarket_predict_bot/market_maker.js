@@ -664,9 +664,9 @@ async function main() {
     const isMLB = combined.includes("mlb") || combined.includes("baseball");
     if (!isCS && !isLoL && !isNBA && !isMLB) { skippedDate++; continue; }
 
-    // NBA/MLB: 根据开赛时间判断，只挂还没开赛的比赛
-    if (isNBA || isMLB) {
-      const label = isNBA ? "NBA" : "MLB";
+    // 所有电竞/体育: 根据开赛时间判断，只挂还没开赛的比赛
+    {
+      const label = isNBA ? "NBA" : isMLB ? "MLB" : isCS ? "CS2" : "LOL";
       const startsAt = cat.startsAt || cat.startTime || cat.scheduledStartTime || null;
       const endsAt = cat.endsAt || null;
       const now = new Date();
