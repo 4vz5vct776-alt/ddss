@@ -32,10 +32,10 @@ const CONFIG = {
   TICK_SIZE: 0.01,        // (已不用于挂单偏移, 仅用于极端情况保护)
 
   // 盘口门槛 (买1挂单量低于此值不挂)
-  MIN_BID1_FOOTBALL: 4000,
-  MIN_BID1_WORLDCUP: 5000,
-  MIN_BID1_ESPORTS: 3000,
-  MIN_BID1_NBA: 3000,
+  MIN_BID1_FOOTBALL: 2000,
+  MIN_BID1_WORLDCUP: 2000,
+  MIN_BID1_ESPORTS: 1500,
+  MIN_BID1_NBA: 1500,
   MIN_BID1_FDV: 2000,
 
   // 异动检测
@@ -449,11 +449,12 @@ async function main() {
   const today = getTodayUTC();
   const tomorrow = getTomorrowUTC();
   console.log(`今天: ${today} | 明天: ${tomorrow}`);
-  console.log(`足球: 挂今天+明天的比赛 + 世界杯不限日期`);
-  console.log(`电竞: 只挂今天的 CS2/LOL 比赛 (不挂Dota)`);
+  console.log(`足球: 挂今天+明天的比赛 + 世界杯/FIFA不限日期(含小组赛+冠亚军)`);
+  console.log(`电竞: 只挂今天+明天的 CS2/LOL 比赛 (不挂Dota)`);
+  console.log(`NBA/MLB: 挂今天+明天的比赛`);
   console.log(`加密: FDV预测市场全挂 (不限日期)`);
   console.log(`挂单价格: 买1 (Yes挂6, No挂6)`);
-  console.log(`盘口最低: 足球≥4000 | 世界杯≥5000 | 电竞≥3000 | FDV≥3000`);
+  console.log(`盘口最低: 足球≥2000 | 世界杯≥2000 | NBA/电竞≥1500 | FDV≥2000`);
   console.log(`只挂有积分奖励的市场, LIVE不挂`);
   console.log("=".repeat(60));
 
@@ -493,7 +494,7 @@ async function main() {
     const eventDate = getEventDate(cat);
     const catSlug = (cat.categorySlug || cat.slug || "").toLowerCase();
     const catTitle = (cat.title || "").toLowerCase();
-    const isWorldCup = catSlug.includes("world-cup") || catSlug.includes("worldcup") || catTitle.includes("world cup") || catTitle.includes("世界杯");
+    const isWorldCup = catSlug.includes("world-cup") || catSlug.includes("worldcup") || catSlug.includes("fifa") || catTitle.includes("world cup") || catTitle.includes("fifa") || catTitle.includes("世界杯") || catSlug.includes("wc-") || catTitle.includes("winner") || catTitle.includes("champion");
     
     // 世界杯不限日期，其他足球只挂今天+明天
     if (!isWorldCup && (!eventDate || (eventDate !== today && eventDate !== tomorrow))) { skippedDate++; continue; }
@@ -519,10 +520,10 @@ async function main() {
     }
   }
 
-  // 电竞/NBA/MLB: 只挂今天的, 挂CS/LOL/NBA/MLB (不挂Dota/板球)
+  // 电竞/NBA/MLB: 挂今天+明天的, 挂CS/LOL/NBA/MLB (不挂Dota/板球)
   for (const cat of esportsCategories) {
     const eventDate = getEventDate(cat);
-    if (!eventDate || eventDate !== today) { skippedDate++; continue; }
+    if (!eventDate || (eventDate !== today && eventDate !== tomorrow)) { skippedDate++; continue; }
 
     // 挂 CS2/CSGO、LOL、NBA、MLB, 跳过 Dota/板球等
     const catTitle = (cat.title || "").toLowerCase();
