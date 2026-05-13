@@ -2,63 +2,41 @@
  * Polymarket LIVE 事件监控 → Predict.fun 自动撤单
  * =================================================
  *
- * 功能:
- *   1. 轮询 Polymarket Gamma API，获取体育比赛市场
- *   2. 检测哪些市场已经变为 LIVE（比赛开始）
- *   3. 通过名称模糊匹配，找到 Predict.fun 上对应的挂单
- *   4. 如果 Polymarket 上比赛已 LIVE → 撤掉 Predict.fun 对应挂单
+ * 核心发现:
+ *   Predict.fun 和 Polymarket 的体育赛事 slug 相同！
+ *   例如: lal-get-mal-2026-05-13 = Getafe vs Mallorca 5月13日
+ *   直接用 slug 查 Polymarket: /events?slug=xxx
  *
- * LIVE 判断逻辑:
- *   - acceptingOrders == false（市场停止接单）
- *   - gameStartTime 已过（当前时间 > 比赛开始时间）
- *   - closed == true 且 closedTime 在近期（市场已关闭/结算）
- *
- * 名称匹配逻辑:
- *   - 提取关键词（队名、选手名、数字等）
- *   - 计算相似度分数
- *   - 超过阈值就认为是同一个事件
+ * 流程:
+ *   1. 获取 Predict.fun 上你有挂单的市场（从 categories API 拿 slug）
+ *   2. 用 slug 直接查 Polymarket Gamma API
+ *   3. 检测该市场是否 LIVE（acceptingOrders=false / gameStartTime已过）
+ *   4. LIVE → 撤掉 Predict.fun 对应挂单
  *
  * 使用:
  *   node live_cancel_monitor.js          # 正式运行
- *   node live_cancel_monitor.js test     # 测试匹配（不撤单）
+ *   node live_cancel_monitor.js test     # 测试（不撤单）
  */
 
 // ============ 配置 ============
 const CONFIG = {
   // Polymarket Gamma API (公开，无需 key)
   POLYMARKET_GAMMA_URL: "https://gamma-api.polymarket.com",
-  POLY_FETCH_LIMIT: 100,
 
   // Predict.fun
   API_URL: "https://api.predict.fun",
   API_KEY: "5f623dc1-147a-4767-8795-cf02f1f25149",
   JWT_TOKEN: "YOUR_JWT_TOKEN_HERE",
 
-  // 匹配阈值 (0-1, 越高越严格)
-  MATCH_THRESHOLD: 0.55,
-
   // 轮询间隔（毫秒）
   POLL_INTERVAL: 10000,
-
-  // 只监控这些体育类型 (Polymarket question 中包含这些关键词才处理)
-  SPORTS_KEYWORDS: [
-    // 足球
-    "fifa", "world cup", "premier league", "la liga", "serie a", "bundesliga",
-    "champions league", "europa league", "ligue 1", "eredivisie", "mls",
-    // NBA
-    "nba",
-    // MLB
-    "mlb",
-    // 通用比赛词
-    "match", "game", "vs",
-  ],
 
   // Telegram 通知
   TELEGRAM_BOT_TOKEN: "8739215233:AAHwG7G60sgOYze9Jo0u-KddtP0UBxDjnKg",
   TELEGRAM_CHAT_ID: "5707621530",
 };
 
-// 已经处理过的 LIVE 市场 (避免重复撤单)
+// 已经处理过的 LIVE 事件 (避免重复撤单)
 const processedLive = new Set();
 
 let running = true;
@@ -103,224 +81,75 @@ async function fetchPredictAPI(path, options = {}) {
   return resp.json();
 }
 
-// ============ 名称匹配工具 ============
+// ============ Polymarket 查询 ============
 
 /**
- * 标准化文本: 转小写, 去特殊字符, 统一空格
+ * 用 slug 直接查 Polymarket 事件
+ * 例如: slug = "lal-get-mal-2026-05-13"
  */
-function normalizeText(text) {
-  if (!text) return "";
-  let t = text.toLowerCase();
-  // 去掉常见前缀 "NBA:", "NFL:" 等
-  t = t.replace(
-    /^(nba|nfl|mlb|nhl|mls|ufc|f1|epl|la liga|serie a|bundesliga)\s*[:：]\s*/,
-    ""
-  );
-  // 去掉连接词
-  t = t.replace(
-    /\b(will|the|a|an|in|on|at|by|to|of|their|this|that|does|do|is|are|beat|win|over|more|than|less|vs|versus)\b/g,
-    " "
-  );
-  // 去掉括号内容
-  t = t.replace(/[\(\[\{].*?[\)\]\}]/g, " ");
-  // 只保留字母数字和空格
-  t = t.replace(/[^a-z0-9\s]/g, " ");
-  // 合并空格
-  t = t.replace(/\s+/g, " ").trim();
-  return t;
-}
-
-/**
- * 提取关键词集合（≥3个字符的词）
- */
-function extractKeywords(text) {
-  const normalized = normalizeText(text);
-  const words = normalized.split(" ");
-  return new Set(words.filter((w) => w.length >= 3));
-}
-
-/**
- * 计算两个文本的相似度 (0-1)
- * 结合: SequenceMatcher 式整体相似度 + 关键词重叠率
- */
-function calculateSimilarity(text1, text2) {
-  const norm1 = normalizeText(text1);
-  const norm2 = normalizeText(text2);
-  if (!norm1 || !norm2) return 0;
-
-  // 方法1: LCS-based ratio (类似 Python SequenceMatcher)
-  const seqRatio = lcsRatio(norm1, norm2);
-
-  // 方法2: 关键词重叠
-  const kw1 = extractKeywords(text1);
-  const kw2 = extractKeywords(text2);
-  if (kw1.size === 0 || kw2.size === 0) return seqRatio;
-
-  let overlap = 0;
-  for (const w of kw1) {
-    if (kw2.has(w)) overlap++;
+async function getPolymarketEventBySlug(slug) {
+  const url = `${CONFIG.POLYMARKET_GAMMA_URL}/events?slug=${encodeURIComponent(slug)}`;
+  try {
+    const resp = await fetch(url, { signal: AbortSignal.timeout(10000) });
+    if (!resp.ok) return null;
+    const events = await resp.json();
+    if (events.length > 0) return events[0];
+    return null;
+  } catch (e) {
+    return null;
   }
-  const keywordRatio = overlap / Math.min(kw1.size, kw2.size);
-
-  // 加权: 关键词匹配更重要 (60%), 整体相似度 (40%)
-  return 0.4 * seqRatio + 0.6 * keywordRatio;
 }
 
 /**
- * LCS ratio: 2 * LCS长度 / (len1 + len2)
+ * 判断 Polymarket 事件是否 LIVE
  */
-function lcsRatio(a, b) {
-  if (!a || !b) return 0;
-  const m = a.length;
-  const n = b.length;
+function isPolymarketLive(event) {
+  if (!event) return false;
 
-  // 使用空间优化的LCS
-  let prev = new Array(n + 1).fill(0);
-  let curr = new Array(n + 1).fill(0);
+  // 检查事件下的所有 markets
+  const markets = event.markets || [];
+  for (const m of markets) {
+    // 不再接单 = 比赛开始了
+    if (m.acceptingOrders === false && m.active === true) return true;
 
-  for (let i = 1; i <= m; i++) {
-    for (let j = 1; j <= n; j++) {
-      if (a[i - 1] === b[j - 1]) {
-        curr[j] = prev[j - 1] + 1;
-      } else {
-        curr[j] = Math.max(prev[j], curr[j - 1]);
+    // 已关闭 = 比赛结束了
+    if (m.closed === true) return true;
+
+    // gameStartTime 已过
+    const gameStart = m.gameStartTime;
+    if (gameStart) {
+      try {
+        const startDt = new Date(gameStart);
+        const now = new Date();
+        if (now > startDt) return true;
+      } catch {
+        // ignore
       }
     }
-    [prev, curr] = [curr, new Array(n + 1).fill(0)];
   }
 
-  const lcsLen = prev[n];
-  return (2 * lcsLen) / (m + n);
-}
-
-/**
- * 在 Predict.fun 市场列表中找最佳匹配
- * 返回: { market, score } 或 null
- */
-function findMatchingPredictMarket(polyTitle, predictMarkets) {
-  let bestMatch = null;
-  let bestScore = 0;
-
-  for (const market of predictMarkets) {
-    const predictName =
-      market.title || market.question || market.name || "";
-    const score = calculateSimilarity(polyTitle, predictName);
-    if (score > bestScore) {
-      bestScore = score;
-      bestMatch = market;
-    }
-  }
-
-  if (bestScore >= CONFIG.MATCH_THRESHOLD) {
-    return { market: bestMatch, score: bestScore };
-  }
-  return null;
-}
-
-// ============ Polymarket LIVE 检测 ============
-
-/**
- * 判断 Polymarket 市场是否体育比赛（足球/NBA/MLB）
- */
-function isSportsMarket(market) {
-  const text = (
-    (market.question || "") + " " +
-    (market.title || "") + " " +
-    (market.description || "") + " " +
-    (market.category || "")
-  ).toLowerCase();
-
-  return CONFIG.SPORTS_KEYWORDS.some((kw) => text.includes(kw));
-}
-
-/**
- * 从 Polymarket Gamma API 获取活跃体育市场
- */
-async function fetchPolymarketMarkets() {
-  // 先尝试按 Sports 分类拉
-  const urls = [
-    `${CONFIG.POLYMARKET_GAMMA_URL}/markets?active=true&limit=${CONFIG.POLY_FETCH_LIMIT}&category=Sports`,
-    `${CONFIG.POLYMARKET_GAMMA_URL}/markets?active=true&limit=${CONFIG.POLY_FETCH_LIMIT}&tag=Sports`,
-  ];
-
-  let allMarkets = [];
-
-  for (const url of urls) {
-    try {
-      const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
-      if (!resp.ok) continue;
-      const markets = await resp.json();
-      if (markets.length > 0) {
-        allMarkets = allMarkets.concat(markets);
-      }
-    } catch (e) {
-      // ignore, try next
-    }
-  }
-
-  // 去重 (by id)
-  const seen = new Set();
-  const unique = [];
-  for (const m of allMarkets) {
-    const id = m.id || "";
-    if (!seen.has(id)) {
-      seen.add(id);
-      unique.push(m);
-    }
-  }
-
-  // 再用关键词过滤，确保只留足球/NBA/MLB
-  const filtered = unique.filter(isSportsMarket);
-  return filtered;
-}
-
-/**
- * 判断 Polymarket 市场是否已经 LIVE (比赛已开始)
- */
-function isPolymarketLive(market) {
-  // 已关闭 = 比赛结束了
-  if (market.closed === true) return true;
-
-  // 不再接单 = 比赛开始了
-  if (market.acceptingOrders === false && market.active === true) return true;
-
-  // 检查 gameStartTime
-  const gameStart = market.gameStartTime;
-  if (gameStart) {
-    try {
-      const startDt = new Date(gameStart);
-      const now = new Date();
-      if (now > startDt) return true;
-    } catch {
-      // ignore
-    }
-  }
+  // 也检查事件级别
+  if (event.closed === true) return true;
 
   return false;
 }
 
-// ============ Predict.fun 订单管理 ============
-
 /**
- * 获取 Predict.fun 活跃市场列表（用于名称匹配）
+ * 获取 Polymarket 事件的 gameStartTime
  */
-async function getPredictMarkets() {
-  try {
-    const params = new URLSearchParams({
-      status: "OPEN",
-      first: "100",
-      hasActiveRewards: "true",
-    });
-    const data = await fetchPredictAPI(`/v1/markets?${params}`);
-    return data.data || [];
-  } catch (e) {
-    console.error("[Predict] 获取市场失败:", e.message);
-    return [];
+function getGameStartTime(event) {
+  if (!event) return null;
+  const markets = event.markets || [];
+  for (const m of markets) {
+    if (m.gameStartTime) return m.gameStartTime;
   }
+  return null;
 }
 
+// ============ Predict.fun 操作 ============
+
 /**
- * 获取 Predict.fun 上所有活跃挂单
+ * 获取 Predict.fun 上有挂单的市场（通过 orders API）
  */
 async function getPredictOpenOrders() {
   try {
@@ -334,35 +163,50 @@ async function getPredictOpenOrders() {
 }
 
 /**
- * 撤销指定市场的所有挂单
+ * 获取 Predict.fun 上的活跃 categories（含 slug）
  */
-async function cancelOrdersForMarket(marketId) {
-  // 先获取该市场的挂单
-  let orders;
+async function getPredictCategories() {
   try {
-    const params = new URLSearchParams({
-      status: "OPEN",
-      marketId: marketId,
-      first: "100",
-    });
-    const data = await fetchPredictAPI(`/v1/orders?${params}`);
-    orders = data.data || [];
+    // 获取体育比赛 categories
+    const variants = ["SPORTS_MATCH", "SPORTS_TEAM_MATCH"];
+    let allCategories = [];
+
+    for (const variant of variants) {
+      try {
+        const data = await fetchPredictAPI(`/v1/categories?first=100&marketVariant=${variant}`);
+        const batch = data.data || [];
+        allCategories = allCategories.concat(batch);
+      } catch {
+        // ignore
+      }
+    }
+
+    return allCategories;
   } catch (e) {
-    console.error(`[Predict] 获取市场 ${marketId} 挂单失败:`, e.message);
+    console.error("[Predict] 获取 categories 失败:", e.message);
+    return [];
+  }
+}
+
+/**
+ * 撤销指定 category 下所有市场的挂单
+ */
+async function cancelOrdersForCategory(categorySlug, orders) {
+  // 找出属于这个 category 的挂单
+  const matchedOrders = orders.filter((o) => {
+    const slug = o.categorySlug || o.category?.slug || o.marketSlug || "";
+    return slug === categorySlug || slug.includes(categorySlug);
+  });
+
+  if (matchedOrders.length === 0) {
+    // 如果无法通过 slug 过滤，尝试通过 marketId
     return 0;
   }
 
-  if (orders.length === 0) {
-    console.log(`[Predict] 市场 ${marketId} 没有挂单`);
-    return 0;
-  }
-
-  // 逐个撤单
   let success = 0;
-  for (const order of orders) {
-    const orderId = order.orderId || order.id || (order.order && order.order.orderId);
+  for (const order of matchedOrders) {
+    const orderId = order.orderId || order.id;
     if (!orderId) continue;
-
     try {
       await fetchPredictAPI(`/v1/orders/${orderId}`, { method: "DELETE" });
       success++;
@@ -370,89 +214,100 @@ async function cancelOrdersForMarket(marketId) {
       console.error(`  撤单失败 (${orderId}):`, e.message);
     }
   }
+  return success;
+}
 
-  console.log(`[Predict] 撤销市场 ${marketId} 的 ${success}/${orders.length} 笔挂单`);
+/**
+ * 撤销所有活跃挂单（当无法精确匹配时的备用方案）
+ */
+async function cancelAllOpenOrders() {
+  const orders = await getPredictOpenOrders();
+  let success = 0;
+  for (const order of orders) {
+    const orderId = order.orderId || order.id;
+    if (!orderId) continue;
+    try {
+      await fetchPredictAPI(`/v1/orders/${orderId}`, { method: "DELETE" });
+      success++;
+    } catch (e) {
+      // ignore
+    }
+  }
   return success;
 }
 
 // ============ 主监控逻辑 ============
 
-/**
- * 单次检查:
- * 1. 获取 Polymarket 市场，找 LIVE 的
- * 2. 获取 Predict.fun 市场列表
- * 3. 名称匹配
- * 4. 匹配到且 LIVE → 撤单
- */
 async function checkAndCancel() {
-  // 1. 获取 Polymarket 市场
-  const polyMarkets = await fetchPolymarketMarkets();
-  if (polyMarkets.length === 0) return;
+  // 1. 获取 Predict.fun 的体育 categories（含 slug）
+  const categories = await getPredictCategories();
+  if (categories.length === 0) return;
 
-  // 2. 筛选新的 LIVE 市场
-  const liveMarkets = [];
-  for (const m of polyMarkets) {
-    const marketId = m.id || "";
-    if (processedLive.has(marketId)) continue;
-    if (isPolymarketLive(m)) {
-      liveMarkets.push(m);
-    }
-  }
+  // 2. 获取当前挂单
+  const orders = await getPredictOpenOrders();
+  if (orders.length === 0) return;
 
-  if (liveMarkets.length === 0) return;
+  console.log(`[${new Date().toLocaleTimeString()}] 检查 ${categories.length} 个比赛, 当前 ${orders.length} 笔挂单`);
 
-  console.log(`\n检测到 ${liveMarkets.length} 个新 LIVE 市场`);
+  // 3. 逐个 category，用 slug 查 Polymarket
+  for (const cat of categories) {
+    const slug = cat.categorySlug || cat.slug || "";
+    if (!slug) continue;
+    if (processedLive.has(slug)) continue;
 
-  // 3. 获取 Predict.fun 市场
-  const predictMarkets = await getPredictMarkets();
-  if (predictMarkets.length === 0) {
-    console.warn("[Predict] 没有获取到市场数据，跳过");
-    return;
-  }
+    // 用 slug 查 Polymarket
+    const polyEvent = await getPolymarketEventBySlug(slug);
+    if (!polyEvent) continue; // Polymarket 没有对应事件
 
-  // 4. 逐个匹配
-  let cancelledTotal = 0;
+    // 检查是否 LIVE
+    if (isPolymarketLive(polyEvent)) {
+      const title = polyEvent.title || cat.title || slug;
+      const gameStart = getGameStartTime(polyEvent);
 
-  for (const polyM of liveMarkets) {
-    const polyQuestion = polyM.question || polyM.title || "";
-    const polyId = polyM.id || "";
+      console.log(`  🚨 LIVE! ${title} (slug: ${slug})`);
+      if (gameStart) console.log(`     开赛时间: ${gameStart}`);
 
-    const match = findMatchingPredictMarket(polyQuestion, predictMarkets);
+      // 撤单: 先尝试精确撤，失败则全撤该 category 的
+      let cancelled = await cancelOrdersForCategory(slug, orders);
 
-    if (match) {
-      const { market: matched, score } = match;
-      const matchedName =
-        matched.title || matched.question || matched.name || "Unknown";
-      const matchedId = matched.id || matched.marketId;
+      // 如果精确匹配撤不到，尝试通过 marketId 撤
+      if (cancelled === 0) {
+        const catMarkets = cat.markets || [];
+        for (const m of catMarkets) {
+          const mid = m.id || m.marketId;
+          if (!mid) continue;
+          try {
+            const params = new URLSearchParams({ status: "OPEN", marketId: mid, first: "100" });
+            const data = await fetchPredictAPI(`/v1/orders?${params}`);
+            const marketOrders = data.data || [];
+            for (const o of marketOrders) {
+              const oid = o.orderId || o.id;
+              if (!oid) continue;
+              try {
+                await fetchPredictAPI(`/v1/orders/${oid}`, { method: "DELETE" });
+                cancelled++;
+              } catch { /* ignore */ }
+            }
+          } catch { /* ignore */ }
+        }
+      }
 
-      console.log(
-        `  🚨 LIVE匹配! Poly: [${polyQuestion.slice(0, 50)}...] ↔ Pred: [${matchedName.slice(0, 50)}...] (${(score * 100).toFixed(0)}%)`
-      );
-
-      // 撤单
-      if (matchedId) {
-        const n = await cancelOrdersForMarket(matchedId);
-        cancelledTotal += n;
-
-        // Telegram 通知
+      if (cancelled > 0) {
+        console.log(`  ✅ 已撤 ${cancelled} 笔挂单`);
         await sendTelegram(
           `🚨 <b>LIVE 自动撤单!</b>\n\n` +
-            `📊 Polymarket: ${polyQuestion.slice(0, 60)}\n` +
-            `🎯 Predict.fun: ${matchedName.slice(0, 60)}\n` +
-            `📏 匹配度: ${(score * 100).toFixed(0)}%\n` +
-            `❌ 已撤 ${n} 笔挂单`
+          `📊 比赛: ${title}\n` +
+          `🔗 Poly slug: ${slug}\n` +
+          `⏰ 开赛: ${gameStart || "已开始"}\n` +
+          `❌ 已撤 ${cancelled} 笔挂单`
         );
       }
 
-      processedLive.add(polyId);
-    } else {
-      // 没匹配到也标记（避免重复检查）
-      processedLive.add(polyId);
+      processedLive.add(slug);
     }
-  }
 
-  if (cancelledTotal > 0) {
-    console.log(`本轮共撤销 ${cancelledTotal} 笔挂单\n`);
+    // 控制 API 速度
+    await sleep(300);
   }
 }
 
@@ -460,12 +315,12 @@ async function checkAndCancel() {
 
 async function runMonitor() {
   console.log("=".repeat(60));
-  console.log("Polymarket LIVE 监控 → Predict.fun 自动撤单");
+  console.log("Polymarket LIVE 监控 → Predict.fun 自动撤单 (slug精确匹配)");
   console.log("=".repeat(60));
   console.log(`Polymarket API: ${CONFIG.POLYMARKET_GAMMA_URL}`);
   console.log(`Predict.fun API: ${CONFIG.API_URL}`);
-  console.log(`匹配阈值: ${(CONFIG.MATCH_THRESHOLD * 100).toFixed(0)}%`);
   console.log(`轮询间隔: ${CONFIG.POLL_INTERVAL / 1000} 秒`);
+  console.log(`匹配方式: slug 精确对应 (不再用模糊匹配)`);
   console.log("=".repeat(60));
   console.log("");
 
@@ -485,83 +340,69 @@ async function runMonitor() {
 
 async function testMatching() {
   console.log("=".repeat(60));
-  console.log("测试模式 - 展示匹配结果 (不撤单)");
+  console.log("测试模式 - slug 精确匹配 (不撤单)");
   console.log("=".repeat(60));
   console.log("");
 
-  // 获取 Polymarket 市场
-  const polyMarkets = await fetchPolymarketMarkets();
-  console.log(`Polymarket 体育市场数: ${polyMarkets.length} (足球/NBA/MLB)`);
+  // 获取 Predict.fun categories
+  const categories = await getPredictCategories();
+  console.log(`Predict.fun 体育比赛数: ${categories.length}`);
 
-  // 获取 Predict.fun 市场
-  const predictMarkets = await getPredictMarkets();
-  console.log(`Predict.fun 市场数: ${predictMarkets.length}`);
-
-  if (polyMarkets.length === 0 || predictMarkets.length === 0) {
-    console.error("无法获取市场数据!");
+  if (categories.length === 0) {
+    console.error("无法获取 Predict.fun 比赛数据!");
     return;
   }
 
-  // 展示 LIVE 市场
+  // 逐个查 Polymarket
   console.log("\n" + "=".repeat(60));
-  console.log("Polymarket LIVE 市场:");
-  console.log("=".repeat(60));
-  let liveCount = 0;
-  for (const m of polyMarkets) {
-    if (isPolymarketLive(m)) {
-      liveCount++;
-      const q = m.question || "N/A";
-      console.log(`  🔴 ${q.slice(0, 80)}`);
-      if (liveCount >= 20) {
-        console.log("  ... 还有更多");
-        break;
-      }
-    }
-  }
-  console.log(`\n总 LIVE 数: ${liveCount}`);
-
-  // 展示匹配结果
-  console.log("\n" + "=".repeat(60));
-  console.log("匹配测试 (Polymarket ↔ Predict.fun):");
+  console.log("slug 对应查询 (Predict → Polymarket):");
   console.log("=".repeat(60));
 
   let matchCount = 0;
-  for (const m of polyMarkets.slice(0, 30)) {
-    const q = m.question || "";
-    const result = findMatchingPredictMarket(q, predictMarkets);
-    if (result) {
+  let liveCount = 0;
+  const maxCheck = Math.min(categories.length, 20); // 测试最多检查20个
+
+  for (let i = 0; i < maxCheck; i++) {
+    const cat = categories[i];
+    const slug = cat.categorySlug || cat.slug || "";
+    const title = cat.title || slug;
+    if (!slug) continue;
+
+    const polyEvent = await getPolymarketEventBySlug(slug);
+
+    if (polyEvent) {
       matchCount++;
-      const matchedName =
-        result.market.title || result.market.question || "?";
-      const isLive = isPolymarketLive(m) ? "🔴LIVE" : "⚪";
-      console.log(`\n  ${isLive} Poly: ${q.slice(0, 60)}`);
-      console.log(`       Pred: ${matchedName.slice(0, 60)}`);
-      console.log(`       分数: ${result.score.toFixed(3)}`);
+      const isLive = isPolymarketLive(polyEvent);
+      const gameStart = getGameStartTime(polyEvent);
+      const icon = isLive ? "🔴LIVE" : "⚪";
+      if (isLive) liveCount++;
+
+      console.log(`\n  ${icon} ${title}`);
+      console.log(`       slug: ${slug}`);
+      console.log(`       Poly: ${polyEvent.title}`);
+      if (gameStart) console.log(`       开赛: ${gameStart}`);
+      console.log(`       acceptingOrders: ${polyEvent.markets?.[0]?.acceptingOrders}`);
+    } else {
+      console.log(`\n  ❌ ${title}`);
+      console.log(`       slug: ${slug} → Polymarket 未找到`);
     }
+
+    await sleep(300);
   }
-  console.log(`\n匹配到 ${matchCount} 个`);
+
+  console.log(`\n${"=".repeat(60)}`);
+  console.log(`检查: ${maxCheck} | 匹配: ${matchCount} | LIVE: ${liveCount}`);
+  console.log("=".repeat(60));
 }
 
 // ============ 入口 ============
 
-// 退出信号
-process.on("SIGINT", () => {
-  running = false;
-  console.log("\n收到退出信号...");
-});
-process.on("SIGTERM", () => {
-  running = false;
-});
+process.on("SIGINT", () => { running = false; console.log("\n退出..."); });
+process.on("SIGTERM", () => { running = false; });
 
 const mode = process.argv[2];
 if (mode === "test") {
-  testMatching().catch((e) => {
-    console.error("测试异常:", e);
-    process.exit(1);
-  });
+  testMatching().catch((e) => { console.error("异常:", e); process.exit(1); });
 } else {
-  runMonitor().catch((e) => {
-    console.error("程序异常:", e);
-    process.exit(1);
-  });
+  runMonitor().catch((e) => { console.error("异常:", e); process.exit(1); });
 }
