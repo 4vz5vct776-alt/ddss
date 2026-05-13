@@ -305,8 +305,26 @@ class MarketMonitor {
         }
       }
 
-      // 直接用该 outcome 的买1价格挂单 (保留原始精度)
-      const fixedPrice = outcomeBidPrice;
+      // 智能挂单: Total多的outcome挂买1, Total少的outcome挂买2
+      // 比较各outcome的bestBid.size，多的挂买1，少的减一个tick挂买2
+      let fixedPrice = outcomeBidPrice;
+      const allOutcomes = this.market.outcomes || [];
+      if (allOutcomes.length >= 2) {
+        // 找出所有outcome的bid size
+        const bidSizes = allOutcomes.map(o => {
+          const bid = o && o.bestBid;
+          return bid ? parseFloat(bid.size || 0) : 0;
+        });
+        const maxBidSize = Math.max(...bidSizes);
+        const currentIdx = allOutcomes.indexOf(outcome);
+        const currentBidSize = bidSizes[currentIdx] || 0;
+
+        // 如果当前outcome的bid size不是最大的 → 挂买2 (买1价 - 1tick)
+        if (currentBidSize < maxBidSize && outcomeBidPrice > 0.02) {
+          fixedPrice = outcomeBidPrice - 0.01; // 买2 = 买1 - 1tick
+        }
+        // 否则挂买1 (不变)
+      }
       if (fixedPrice <= 0 || isNaN(fixedPrice)) continue;
       if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
 
