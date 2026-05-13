@@ -278,7 +278,7 @@ class MarketMonitor {
 
     // 开赛时间 (用于开赛前30分钟撤单)
     this.startsAt = null;
-    const catStartsAt = market.startsAt || market.startTime || market.scheduledStartTime || null;
+    const catStartsAt = market.startsAt || market.startTime || market.scheduledStartTime || market.gameStartTime || null;
     if (catStartsAt) {
       this.startsAt = new Date(catStartsAt);
     }
@@ -645,7 +645,7 @@ async function main() {
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
       // 市场级别再次检查开赛时间，已开赛的绝对不挂
-      const mStartsAt = m.startsAt || m.startTime || m.scheduledStartTime || null;
+      const mStartsAt = m.startsAt || m.startTime || m.scheduledStartTime || m.gameStartTime || null;
       if (mStartsAt) {
         const mStartTime = new Date(mStartsAt);
         if (new Date() >= mStartTime) { skippedLive++; continue; }
@@ -683,7 +683,7 @@ async function main() {
     // 所有电竞/体育: 根据开赛时间判断，只挂还没开赛的比赛
     {
       const label = isNBA ? "NBA" : isMLB ? "MLB" : isCS ? "CS2" : "LOL";
-      const startsAt = cat.startsAt || cat.startTime || cat.scheduledStartTime || null;
+      const startsAt = cat.startsAt || cat.startTime || cat.scheduledStartTime || cat.gameStartTime || null;
       const endsAt = cat.endsAt || null;
       const now = new Date();
 
@@ -720,7 +720,7 @@ async function main() {
       const mState = (m.state || "").toUpperCase();
       if (tStatus !== "OPEN" || mStatus === "LIVE" || mState === "LIVE" || m.isLive === true) { skippedLive++; continue; }
       // 市场级别再次检查开赛时间，已开赛的绝对不挂
-      const mStartsAt = m.startsAt || m.startTime || m.scheduledStartTime || null;
+      const mStartsAt = m.startsAt || m.startTime || m.scheduledStartTime || m.gameStartTime || null;
       if (mStartsAt) {
         const mStartTime = new Date(mStartsAt);
         if (new Date() >= mStartTime) { skippedLive++; continue; }
