@@ -35,10 +35,23 @@ const CONFIG = {
   JWT_TOKEN: "YOUR_JWT_TOKEN_HERE",
 
   // 匹配阈值 (0-1, 越高越严格)
-  MATCH_THRESHOLD: 0.45,
+  MATCH_THRESHOLD: 0.55,
 
   // 轮询间隔（毫秒）
   POLL_INTERVAL: 10000,
+
+  // 只监控这些体育类型 (Polymarket question 中包含这些关键词才处理)
+  SPORTS_KEYWORDS: [
+    // 足球
+    "fifa", "world cup", "premier league", "la liga", "serie a", "bundesliga",
+    "champions league", "europa league", "ligue 1", "eredivisie", "mls",
+    // NBA
+    "nba",
+    // MLB
+    "mlb",
+    // 通用比赛词
+    "match", "game", "vs",
+  ],
 
   // Telegram 通知
   TELEGRAM_BOT_TOKEN: "8739215233:AAHwG7G60sgOYze9Jo0u-KddtP0UBxDjnKg",
@@ -207,19 +220,58 @@ function findMatchingPredictMarket(polyTitle, predictMarkets) {
 // ============ Polymarket LIVE 检测 ============
 
 /**
- * 从 Polymarket Gamma API 获取活跃市场
+ * 判断 Polymarket 市场是否体育比赛（足球/NBA/MLB）
+ */
+function isSportsMarket(market) {
+  const text = (
+    (market.question || "") + " " +
+    (market.title || "") + " " +
+    (market.description || "") + " " +
+    (market.category || "")
+  ).toLowerCase();
+
+  return CONFIG.SPORTS_KEYWORDS.some((kw) => text.includes(kw));
+}
+
+/**
+ * 从 Polymarket Gamma API 获取活跃体育市场
  */
 async function fetchPolymarketMarkets() {
-  const url = `${CONFIG.POLYMARKET_GAMMA_URL}/markets?active=true&limit=${CONFIG.POLY_FETCH_LIMIT}`;
-  try {
-    const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
-    if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
-    const markets = await resp.json();
-    return markets;
-  } catch (e) {
-    console.error("[Polymarket] 获取市场失败:", e.message);
-    return [];
+  // 先尝试按 Sports 分类拉
+  const urls = [
+    `${CONFIG.POLYMARKET_GAMMA_URL}/markets?active=true&limit=${CONFIG.POLY_FETCH_LIMIT}&category=Sports`,
+    `${CONFIG.POLYMARKET_GAMMA_URL}/markets?active=true&limit=${CONFIG.POLY_FETCH_LIMIT}&tag=Sports`,
+  ];
+
+  let allMarkets = [];
+
+  for (const url of urls) {
+    try {
+      const resp = await fetch(url, { signal: AbortSignal.timeout(15000) });
+      if (!resp.ok) continue;
+      const markets = await resp.json();
+      if (markets.length > 0) {
+        allMarkets = allMarkets.concat(markets);
+      }
+    } catch (e) {
+      // ignore, try next
+    }
   }
+
+  // 去重 (by id)
+  const seen = new Set();
+  const unique = [];
+  for (const m of allMarkets) {
+    const id = m.id || "";
+    if (!seen.has(id)) {
+      seen.add(id);
+      unique.push(m);
+    }
+  }
+
+  // 再用关键词过滤，确保只留足球/NBA/MLB
+  const filtered = unique.filter(isSportsMarket);
+  return filtered;
 }
 
 /**
@@ -439,7 +491,7 @@ async function testMatching() {
 
   // 获取 Polymarket 市场
   const polyMarkets = await fetchPolymarketMarkets();
-  console.log(`Polymarket 市场数: ${polyMarkets.length}`);
+  console.log(`Polymarket 体育市场数: ${polyMarkets.length} (足球/NBA/MLB)`);
 
   // 获取 Predict.fun 市场
   const predictMarkets = await getPredictMarkets();
