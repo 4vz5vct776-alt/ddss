@@ -43,7 +43,8 @@ const CONFIG = {
   BID1_MIN_SIZE: 50,        // 买1低于此量触发撤单
 
   // 时间
-  POLL_INTERVAL: 3000,      // 轮询间隔 3秒
+  POLL_INTERVAL: 60000,     // 轮询间隔 60秒(1分钟)
+  ANOMALY_CHECK_INTERVAL: 3000, // 异动检测间隔 3秒
   RECOVER_WAIT: 60000,      // 异动后冷却 60秒(1分钟)，冷却后重新检查买1是否符合条件再挂
 
   // Telegram
@@ -142,7 +143,7 @@ async function getOrderbook(marketId) {
     const ob = data.data || data;
 
     const bids = ob.bids || [];
-    let bid1Price = 0, bid1Size = 0;
+    let bid1Price = 0, bid1Size = 0, bid2Price = 0;
     if (bids.length > 0) {
       const b = bids[0];
       if (typeof b === "object" && !Array.isArray(b)) {
@@ -151,6 +152,14 @@ async function getOrderbook(marketId) {
       } else if (Array.isArray(b)) {
         bid1Price = parseFloat(b[0] || 0);
         bid1Size = parseFloat(b[1] || 0);
+      }
+    }
+    if (bids.length > 1) {
+      const b2 = bids[1];
+      if (typeof b2 === "object" && !Array.isArray(b2)) {
+        bid2Price = parseFloat(b2.price || 0);
+      } else if (Array.isArray(b2)) {
+        bid2Price = parseFloat(b2[0] || 0);
       }
     }
 
@@ -165,7 +174,40 @@ async function getOrderbook(marketId) {
       }
     }
 
-    return { bid1Price, bid1Size, ask1Price, hasAsks: asks.length > 0 };
+    return { bid1Price, bid1Size, bid2Price, ask1Price, hasAsks: asks.length > 0 };
+  } catch (e) {
+    return null;
+  }
+}
+
+// 获取单个outcome的盘口(买1/买2)
+async function getOutcomeOrderbook(marketId, outcomeIndex) {
+  try {
+    const data = await fetchAPI(`/v1/markets/${marketId}/orderbook`);
+    const ob = data.data || data;
+    // 有些API按outcome分开返回盘口
+    // 如果是统一盘口，直接返回
+    const bids = ob.bids || [];
+    let bid1Price = 0, bid1Size = 0, bid2Price = 0;
+    if (bids.length > 0) {
+      const b = bids[0];
+      if (typeof b === "object" && !Array.isArray(b)) {
+        bid1Price = parseFloat(b.price || 0);
+        bid1Size = parseFloat(b.size || 0);
+      } else if (Array.isArray(b)) {
+        bid1Price = parseFloat(b[0] || 0);
+        bid1Size = parseFloat(b[1] || 0);
+      }
+    }
+    if (bids.length > 1) {
+      const b2 = bids[1];
+      if (typeof b2 === "object" && !Array.isArray(b2)) {
+        bid2Price = parseFloat(b2.price || 0);
+      } else if (Array.isArray(b2)) {
+        bid2Price = parseFloat(b2[0] || 0);
+      }
+    }
+    return { bid1Price, bid1Size, bid2Price };
   } catch (e) {
     return null;
   }
@@ -282,8 +324,10 @@ class MarketMonitor {
     // 没有卖盘 = 市场已结束，不挂
     if (!book.hasAsks) return null;
 
-    // 对每个 outcome 都尝试挂单 (Yes + No 各挂10)
+    // 收集所有有效 outcome 的盘口信息
     const outcomes = this.market.outcomes || [];
+    const validOutcomes = [];
+
     for (const outcome of outcomes) {
       if (!outcome) continue;
       const tokenId = String(outcome.onChainId || "");
@@ -305,8 +349,67 @@ class MarketMonitor {
         }
       }
 
-      // 直接用该 outcome 的买1价格挂单 (保留原始精度)
-      const fixedPrice = outcomeBidPrice;
+      if (outcomeBidPrice <= 0 || isNaN(outcomeBidPrice)) continue;
+      if (outcomeBidPrice * CONFIG.ORDER_SIZE < 0.9) continue;
+
+      // 获取买2价格: 优先从 outcome.bids[1] 获取，否则用 bestBid.price - 0.01
+      let bid2Price = 0;
+      const outcomeBids = outcome.bids || [];
+      if (outcomeBids.length > 1) {
+        const b2 = outcomeBids[1];
+        if (typeof b2 === "object" && !Array.isArray(b2)) {
+          bid2Price = parseFloat(b2.price || 0);
+        } else if (Array.isArray(b2)) {
+          bid2Price = parseFloat(b2[0] || 0);
+        } else {
+          bid2Price = parseFloat(b2 || 0);
+        }
+      }
+      // 如果没有买2数据，用买1-0.01作为买2
+      if (!bid2Price || bid2Price <= 0) {
+        bid2Price = outcomeBidPrice - 0.01;
+      }
+
+      // 计算买2与买1的距离 (距离越小=买2越接近买1)
+      const bid2Gap = outcomeBidPrice - bid2Price;
+
+      validOutcomes.push({
+        outcome,
+        tokenId,
+        bid1Price: outcomeBidPrice,
+        bid2Price,
+        bid2Gap,
+        name: outcome.name || "",
+      });
+    }
+
+    if (validOutcomes.length === 0) return null;
+
+    // 决定每个 outcome 的挂单价格
+    // 逻辑: 同一个市场的 Yes 和 No，谁的买2价更接近买1价(gap更小)谁挂买1，另一个挂买2(买1-0.01)
+    let orderPrices = [];
+
+    if (validOutcomes.length >= 2) {
+      // 按 bid2Gap 升序排序 (gap小的=买2更接近买1)
+      validOutcomes.sort((a, b) => a.bid2Gap - b.bid2Gap);
+
+      // gap最小的那个挂买1价
+      orderPrices.push({ ...validOutcomes[0], placePrice: validOutcomes[0].bid1Price });
+      // 其余的挂买2价 (买1 - 0.01)
+      for (let i = 1; i < validOutcomes.length; i++) {
+        const bid2PlacePrice = Math.round((validOutcomes[i].bid1Price - 0.01) * 100) / 100;
+        orderPrices.push({ ...validOutcomes[i], placePrice: bid2PlacePrice });
+      }
+
+      console.log(`  📊 [${this.marketName}] 挂单决策: ${validOutcomes[0].name}(gap=${validOutcomes[0].bid2Gap.toFixed(3)})→挂买1@${validOutcomes[0].bid1Price.toFixed(2)} | ${validOutcomes[1].name}(gap=${validOutcomes[1].bid2Gap.toFixed(3)})→挂买2@${(validOutcomes[1].bid1Price - 0.01).toFixed(2)}`);
+    } else {
+      // 只有一个有效 outcome，直接挂买1
+      orderPrices.push({ ...validOutcomes[0], placePrice: validOutcomes[0].bid1Price });
+    }
+
+    // 执行挂单
+    for (const op of orderPrices) {
+      const fixedPrice = op.placePrice;
       if (fixedPrice <= 0 || isNaN(fixedPrice)) continue;
       if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
 
@@ -322,7 +425,7 @@ class MarketMonitor {
 
         const order = this.orderBuilder.buildOrder("LIMIT", {
           side: Side.BUY,
-          tokenId: tokenId,
+          tokenId: op.tokenId,
           makerAmount,
           takerAmount,
           nonce: 0n,
@@ -351,20 +454,76 @@ class MarketMonitor {
 
         const result = await fetchAPI("/v1/orders", { method: "POST", body: JSON.stringify(body) });
         const orderId = result.data?.orderId || result.orderId || null;
-        console.log(`  ✅ [${this.marketName}] 挂单 BUY ${outcome.name || ""} @ ${fixedPrice.toFixed(2)}, id=${orderId}`);
+        const priceLabel = fixedPrice === op.bid1Price ? "买1" : "买2";
+        console.log(`  ✅ [${this.marketName}] 挂单 BUY ${op.name} @ ${fixedPrice.toFixed(2)} (${priceLabel}), id=${orderId}`);
         // 记录第一个成功的订单用于状态跟踪
         if (!this.activeOrderId) {
           this.activeOrderId = orderId;
           this.activeSide = "BUY";
         }
       } catch (e) {
-        console.error(`  ❌ [${this.marketName}] ${outcome.name || ""} 挂单失败: ${e.message}`);
+        console.error(`  ❌ [${this.marketName}] ${op.name} 挂单失败: ${e.message}`);
       }
     }
     return this.activeOrderId;
   }
 
+  async tickAnomaly() {
+    // 快速异动检测循环 (每3秒)，发现异动立刻撤单
+    if (this.isFilled) return;
+    if (this.isExpired) return;
+    if (!this.activeOrderId) return;
+
+    // 开赛前30分钟自动撤单 (NBA/MLB)
+    if (this.startsAt) {
+      const now = new Date();
+      const thirtyMinBefore = new Date(this.startsAt.getTime() - 30 * 60 * 1000);
+      if (now >= thirtyMinBefore) {
+        console.log(`  ⏰ [${this.marketName}] 开赛前30分钟，自动撤单!`);
+        await this.cancelActiveOrder();
+        await sendTelegram(`⏰ <b>开赛前30分钟撤单</b>\n\n📊 ${this.marketName}`);
+        this.isExpired = true;
+        return;
+      }
+    }
+
+    // 检查订单状态
+    const status = await getOrderStatus(this.activeOrderId);
+    if (status === null) return; // 网络问题,跳过
+    if (status === "MATCHED" || status === "FILLED" || status === "EXECUTED" || status === "PARTIALLY_FILLED" || status === "CLOSED") {
+      console.log(`  🔔 [${this.marketName}] 挂单被吃! 状态=${status}`);
+      await sendTelegram(`🔔 <b>挂单被吃!</b>\n\n📊 ${this.marketName}\n🆔 ${this.activeOrderId}\n📋 ${status}`);
+      this.isFilled = true;
+      this.activeOrderId = null;
+      return;
+    } else if (status === "CANCELLED" || status === "EXPIRED" || status === "REJECTED") {
+      this.activeOrderId = null;
+      this.activeSide = null;
+      return;
+    }
+
+    // OPEN状态 → 异动检测
+    const book = await getOrderbook(this.marketId);
+    if (!book) return;
+
+    // 没有卖盘(Ask) = 市场已结束，撤单并停止
+    if (!book.hasAsks) {
+      console.log(`  🚫 [${this.marketName}] 没有卖盘，市场已结束，撤单!`);
+      await this.cancelActiveOrder();
+      this.isExpired = true;
+      return;
+    }
+
+    // 异动检测: 买1大幅减少 → 立刻撤单
+    if (this.checkAnomaly(book)) {
+      await this.cancelActiveOrder();
+      this.isCoolingDown = true;
+      this.cooldownStart = Date.now();
+    }
+  }
+
   async tick() {
+    // 挂单循环 (每1分钟)，负责下新单
     if (this.isFilled) return;
     if (this.isExpired) return;
 
@@ -390,52 +549,21 @@ class MarketMonitor {
       this.lastBid1Size = null;
     }
 
+    // 已有挂单，不重复下单
+    if (this.activeOrderId) return;
+
     // 获取盘口
     const book = await getOrderbook(this.marketId);
     if (!book) return;
 
-    // 没有卖盘(Ask) = 市场已结束，撤单并停止
+    // 没有卖盘(Ask) = 市场已结束
     if (!book.hasAsks) {
-      if (this.activeOrderId) {
-        console.log(`  🚫 [${this.marketName}] 没有卖盘，市场已结束，撤单!`);
-        await this.cancelActiveOrder();
-      }
       this.isExpired = true;
       return;
     }
 
-    // 检查订单状态
-    if (this.activeOrderId) {
-      const status = await getOrderStatus(this.activeOrderId);
-      if (status === null) return; // 网络问题,跳过
-      if (status === "OPEN") {
-        // 正常,检查异动
-      } else if (status === "MATCHED" || status === "FILLED" || status === "EXECUTED" || status === "PARTIALLY_FILLED" || status === "CLOSED") {
-        console.log(`  🔔 [${this.marketName}] 挂单被吃! 状态=${status}`);
-        await sendTelegram(`🔔 <b>挂单被吃!</b>\n\n📊 ${this.marketName}\n🆔 ${this.activeOrderId}\n📋 ${status}`);
-        this.isFilled = true;
-        this.activeOrderId = null;
-        return;
-      } else if (status === "CANCELLED" || status === "EXPIRED" || status === "REJECTED") {
-        this.activeOrderId = null;
-        this.activeSide = null;
-      } else {
-        return;
-      }
-    }
-
-    // 有订单 → 异动检测
-    if (this.activeOrderId) {
-      if (this.checkAnomaly(book)) {
-        await this.cancelActiveOrder();
-        this.isCoolingDown = true;
-        this.cooldownStart = Date.now();
-        return;
-      }
-    } else {
-      // 无订单 → 挂单
-      await this.placeOrder(book);
-    }
+    // 无订单 → 挂单
+    await this.placeOrder(book);
   }
 }
 
@@ -648,21 +776,47 @@ async function main() {
   process.on("SIGINT", cleanup);
   process.on("SIGTERM", cleanup);
 
-  // 主循环
-  console.log("🚀 开始做市循环...\n");
+  // 主循环: 双循环模式
+  // - 挂单循环: 每1分钟轮询一次，检查并下新单
+  // - 异动检测循环: 每3秒轮询一次，发现买1异动立刻撤单
+  console.log("🚀 开始做市循环...");
+  console.log(`   挂单轮询: 每 ${CONFIG.POLL_INTERVAL / 1000}秒 | 异动检测: 每 ${CONFIG.ANOMALY_CHECK_INTERVAL / 1000}秒\n`);
 
-  while (running) {
-    for (const monitor of monitors) {
-      if (!running) break;
-      try {
-        await monitor.tick();
-      } catch (e) {
-        console.error(`  [${monitor.marketName}] 异常: ${e.message}`);
+  // 挂单循环 (每1分钟)
+  const orderLoop = async () => {
+    while (running) {
+      for (const monitor of monitors) {
+        if (!running) break;
+        try {
+          await monitor.tick();
+        } catch (e) {
+          console.error(`  [${monitor.marketName}] 挂单异常: ${e.message}`);
+        }
+        await sleep(300);
       }
-      await sleep(300);
+      await sleep(CONFIG.POLL_INTERVAL);
     }
-    await sleep(CONFIG.POLL_INTERVAL);
-  }
+  };
+
+  // 异动检测循环 (每3秒)
+  const anomalyLoop = async () => {
+    while (running) {
+      for (const monitor of monitors) {
+        if (!running) break;
+        if (!monitor.activeOrderId) continue; // 没有活跃订单，跳过
+        try {
+          await monitor.tickAnomaly();
+        } catch (e) {
+          console.error(`  [${monitor.marketName}] 异动检测异常: ${e.message}`);
+        }
+        await sleep(200);
+      }
+      await sleep(CONFIG.ANOMALY_CHECK_INTERVAL);
+    }
+  };
+
+  // 同时启动两个循环
+  await Promise.all([orderLoop(), anomalyLoop()]);
 }
 
 main().catch(e => {
