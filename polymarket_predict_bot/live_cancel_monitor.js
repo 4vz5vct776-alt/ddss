@@ -38,7 +38,7 @@ const CONFIG = {
   MATCH_THRESHOLD: 0.45,
 
   // 轮询间隔（毫秒）
-  POLL_INTERVAL: 60000,
+  POLL_INTERVAL: 10000,
 
   // Telegram 通知
   TELEGRAM_BOT_TOKEN: "8739215233:AAHwG7G60sgOYze9Jo0u-KddtP0UBxDjnKg",
