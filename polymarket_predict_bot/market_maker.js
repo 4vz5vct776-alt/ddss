@@ -42,6 +42,19 @@ const CONFIG = {
   BID1_DROP_PERCENT: 0.3,   // 买1减少30%触发撤单
   BID1_MIN_SIZE: 50,        // 买1低于此量触发撤单
 
+  // Polymarket 盘口监控
+  POLYMARKET_CLOB_URL: "https://clob.polymarket.com",
+  POLY_BID1_DROP_PERCENT: 0.3,  // Poly买1减少30%触发Predict撤单
+  POLY_POLL_INTERVAL: 3000,     // Poly盘口轮询间隔 3秒
+
+  // 卖压/价格跳变保护
+  SELL_PRESSURE_RATIO: 3,       // 卖1量 > 买1量的N倍 → 撤单
+  SELL_PRESSURE_MIN_SIZE: 500,  // 卖1量至少要超过此值才算卖压
+  PRICE_JUMP_THRESHOLD: 0.05,   // 买1价跳跌>=0.05触发撤单
+
+  // 挂单超时重挂
+  ORDER_MAX_AGE: 600000,        // 10分钟(600秒)，超时撤掉重新检查再挂买1
+
   // 时间
   POLL_INTERVAL: 3000,      // 轮询间隔 3秒
   RECOVER_WAIT: 60000,      // 异动后冷却 60秒(1分钟)，冷却后重新检查买1是否符合条件再挂
@@ -156,17 +169,43 @@ async function getOrderbook(marketId) {
 
     const asks = ob.asks || [];
     let ask1Price = 999;
+    let ask1Size = 0;
     if (asks.length > 0) {
       const a = asks[0];
       if (typeof a === "object" && !Array.isArray(a)) {
         ask1Price = parseFloat(a.price || 999);
+        ask1Size = parseFloat(a.size || 0);
       } else if (Array.isArray(a)) {
         ask1Price = parseFloat(a[0] || 999);
+        ask1Size = parseFloat(a[1] || 0);
       }
     }
 
-    return { bid1Price, bid1Size, ask1Price, hasAsks: asks.length > 0 };
+    return { bid1Price, bid1Size, ask1Price, ask1Size, hasAsks: asks.length > 0 };
   } catch (e) {
+    return null;
+  }
+}
+
+// ============ Polymarket 盘口 ============
+
+async function fetchPolymarketOrderbook(tokenId) {
+  try {
+    const url = `${CONFIG.POLYMARKET_CLOB_URL}/book?token_id=${tokenId}`;
+    const resp = await fetch(url, { headers: { "Content-Type": "application/json" } });
+    if (!resp.ok) return null;
+    const data = await resp.json();
+
+    const bids = data.bids || [];
+    let bid1Price = 0, bid1Size = 0;
+    if (bids.length > 0) {
+      bid1Price = parseFloat(bids[0].price || 0);
+      bid1Size = parseFloat(bids[0].size || 0);
+    }
+
+    return { bid1Price, bid1Size, hasBids: bids.length > 0 };
+  } catch (e) {
+    console.error(`[Polymarket] 获取盘口失败 (${tokenId}): ${e.message}`);
     return null;
   }
 }
@@ -245,6 +284,98 @@ class MarketMonitor {
     this.cooldownStart = 0;
     this.isFilled = false;
     this.isExpired = false; // 开赛前30分钟标记为过期
+
+    // Polymarket 盘口监控 (仅体育/电竞市场, 通过 polymarketConditionIds 关联)
+    this.enablePolyMonitor = false; // 默认关闭，只有体育/电竞市场启用
+    this.polyTokenIds = market.polymarketConditionIds || [];
+    this.polyLastBid1 = {};  // { tokenId: { size, price } } 记录上次Poly买1
+
+    // 价格跳变检测
+    this.lastBid1Price = null;
+
+    // 挂单时间记录 (超时重挂)
+    this.orderPlacedAt = 0;
+  }
+
+  /**
+   * 检查 Polymarket 盘口异动
+   * - 买1消失 (hasBids=false) → 异动
+   * - 买1 size 减少 >= 30% → 异动
+   * 返回 true 表示触发撤单
+   */
+  async checkPolyAnomaly() {
+    if (!this.polyTokenIds || this.polyTokenIds.length === 0) return false;
+
+    for (const tokenId of this.polyTokenIds) {
+      const polyBook = await fetchPolymarketOrderbook(tokenId);
+      if (!polyBook) continue; // 网络问题跳过
+
+      const prev = this.polyLastBid1[tokenId];
+
+      // 买1完全消失 → 立即触发
+      if (!polyBook.hasBids || polyBook.bid1Size <= 0) {
+        if (prev && prev.size > 0) {
+          console.log(`  🚨 [${this.marketName}] Polymarket 买1消失! (之前: ${prev.size.toFixed(0)})`);
+          this.polyLastBid1[tokenId] = { size: 0, price: 0 };
+          return true;
+        }
+        this.polyLastBid1[tokenId] = { size: 0, price: 0 };
+        continue;
+      }
+
+      // 首次记录
+      if (!prev) {
+        this.polyLastBid1[tokenId] = { size: polyBook.bid1Size, price: polyBook.bid1Price };
+        continue;
+      }
+
+      // 买1 size 减少 >= 30%
+      if (prev.size > 0) {
+        const dropRatio = (prev.size - polyBook.bid1Size) / prev.size;
+        if (dropRatio >= CONFIG.POLY_BID1_DROP_PERCENT) {
+          console.log(`  🚨 [${this.marketName}] Polymarket 买1异动! ${prev.size.toFixed(0)} → ${polyBook.bid1Size.toFixed(0)} (↓${(dropRatio * 100).toFixed(0)}%)`);
+          this.polyLastBid1[tokenId] = { size: polyBook.bid1Size, price: polyBook.bid1Price };
+          return true;
+        }
+      }
+
+      // 更新记录
+      this.polyLastBid1[tokenId] = { size: polyBook.bid1Size, price: polyBook.bid1Price };
+    }
+
+    return false;
+  }
+
+  /**
+   * 卖压检测: 卖1量远大于买1量 → 有人要砸盘
+   */
+  checkSellPressure(book) {
+    const ask1Size = book.ask1Size || 0;
+    const bid1Size = book.bid1Size || 0;
+    if (ask1Size > bid1Size * CONFIG.SELL_PRESSURE_RATIO && ask1Size > CONFIG.SELL_PRESSURE_MIN_SIZE) {
+      console.log(`  ⚠️ [${this.marketName}] 卖压! ask1=${ask1Size.toFixed(0)} >> bid1=${bid1Size.toFixed(0)} (${(ask1Size / bid1Size).toFixed(1)}倍)`);
+      return true;
+    }
+    return false;
+  }
+
+  /**
+   * 价格跳变检测: 买1价突然跳跌 → 大单砸盘
+   */
+  checkPriceJump(book) {
+    const currentPrice = book.bid1Price;
+    if (this.lastBid1Price === null) { this.lastBid1Price = currentPrice; return false; }
+    if (this.lastBid1Price <= 0) { this.lastBid1Price = currentPrice; return false; }
+
+    const priceDrop = this.lastBid1Price - currentPrice;
+    const prevPrice = this.lastBid1Price;
+    this.lastBid1Price = currentPrice;
+
+    if (priceDrop >= CONFIG.PRICE_JUMP_THRESHOLD) {
+      console.log(`  ⚠️ [${this.marketName}] 价格跳水! ${prevPrice.toFixed(2)} → ${currentPrice.toFixed(2)} (↓${priceDrop.toFixed(2)})`);
+      return true;
+    }
+    return false;
   }
 
   checkAnomaly(book) {
@@ -356,6 +487,7 @@ class MarketMonitor {
         if (!this.activeOrderId) {
           this.activeOrderId = orderId;
           this.activeSide = "BUY";
+          this.orderPlacedAt = Date.now();
         }
       } catch (e) {
         console.error(`  ❌ [${this.marketName}] ${outcome.name || ""} 挂单失败: ${e.message}`);
@@ -426,6 +558,49 @@ class MarketMonitor {
 
     // 有订单 → 异动检测
     if (this.activeOrderId) {
+      // 10分钟超时: 撤掉重新检查条件再挂买1
+      if (this.orderPlacedAt > 0 && Date.now() - this.orderPlacedAt > CONFIG.ORDER_MAX_AGE) {
+        console.log(`  🔄 [${this.marketName}] 挂单超10分钟, 撤掉重新检查再挂`);
+        await this.cancelActiveOrder();
+        this.orderPlacedAt = 0;
+        this.lastBid1Size = null;
+        this.lastBid1Price = null;
+        // 不进冷却，直接下一轮重新挂
+        return;
+      }
+
+      // Polymarket 盘口异动检测 (仅体育/电竞, Poly撤单则Predict立刻撤)
+      if (this.enablePolyMonitor && this.polyTokenIds.length > 0) {
+        const polyAnomaly = await this.checkPolyAnomaly();
+        if (polyAnomaly) {
+          console.log(`  🚨 [${this.marketName}] Polymarket异动触发撤单!`);
+          await sendTelegram(`🚨 <b>Polymarket异动撤单!</b>\n\n📊 ${this.marketName}\n📉 Poly买1撤单或减少≥30%`);
+          await this.cancelActiveOrder();
+          this.isCoolingDown = true;
+          this.cooldownStart = Date.now();
+          return;
+        }
+      }
+
+      // 卖压检测: 卖1量远大于买1量
+      if (this.checkSellPressure(book)) {
+        await sendTelegram(`⚠️ <b>卖压撤单!</b>\n\n📊 ${this.marketName}\n📉 卖1量远大于买1量`);
+        await this.cancelActiveOrder();
+        this.isCoolingDown = true;
+        this.cooldownStart = Date.now();
+        return;
+      }
+
+      // 价格跳变检测: 买1价突然跳跌
+      if (this.checkPriceJump(book)) {
+        await sendTelegram(`⚠️ <b>价格跳水撤单!</b>\n\n📊 ${this.marketName}\n📉 买1价跌幅≥${CONFIG.PRICE_JUMP_THRESHOLD}`);
+        await this.cancelActiveOrder();
+        this.isCoolingDown = true;
+        this.cooldownStart = Date.now();
+        return;
+      }
+
+      // Predict 自身盘口异动检测
       if (this.checkAnomaly(book)) {
         await this.cancelActiveOrder();
         this.isCoolingDown = true;
@@ -455,6 +630,7 @@ async function main() {
   console.log(`挂单价格: 买1 (Yes挂6, No挂6)`);
   console.log(`盘口最低: 足球≥4000 | 世界杯≥5000 | 电竞≥3000 | FDV≥3000`);
   console.log(`只挂有积分奖励的市场, LIVE不挂`);
+  console.log(`Polymarket监控: 体育/电竞有polymarketConditionIds的市场, Poly买1撤单/减少30%则立刻撤单`);
   console.log("=".repeat(60));
 
   // 初始化 SDK
@@ -515,6 +691,7 @@ async function main() {
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
       monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isWorldCup ? CONFIG.MIN_BID1_WORLDCUP : CONFIG.MIN_BID1_FOOTBALL));
+      monitors[monitors.length - 1].enablePolyMonitor = true;
       footballCount++;
     }
   }
@@ -576,6 +753,7 @@ async function main() {
       if (seenMarketIds.has(mid)) continue;
       seenMarketIds.add(mid);
       monitors.push(new MarketMonitor(m, cat.title || "", orderBuilder, isNBA ? CONFIG.MIN_BID1_NBA : CONFIG.MIN_BID1_ESPORTS));
+      monitors[monitors.length - 1].enablePolyMonitor = true;
       esportsCount++;
     }
   }
