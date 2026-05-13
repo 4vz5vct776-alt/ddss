@@ -716,9 +716,9 @@ async function main() {
     const isNBAPre = combinedPre.includes("nba") || combinedPre.includes("basketball");
     const isMLBPre = combinedPre.includes("mlb") || combinedPre.includes("baseball");
 
-    // NBA/MLB: 挂今天+明天; 电竞: 只挂今天
+    // NBA/MLB: 只挂明天(第二天)盘前; 电竞: 只挂今天
     if (isNBAPre || isMLBPre) {
-      if (!eventDate || (eventDate !== today && eventDate !== tomorrow)) { skippedDate++; continue; }
+      if (!eventDate || eventDate !== tomorrow) { skippedDate++; continue; }
     } else {
       if (!eventDate || eventDate !== today) { skippedDate++; continue; }
     }
