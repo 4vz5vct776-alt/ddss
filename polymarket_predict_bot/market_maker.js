@@ -395,9 +395,10 @@ class MarketMonitor {
 
       // 份额最多的挂买1价
       orderPrices.push({ ...validOutcomes[0], placePrice: validOutcomes[0].bid1Price });
-      // 份额少的挂买2价 (买1 - 0.01)
+      // 份额少的挂买2价 (买1 - 0.01，保留原始精度)
       for (let i = 1; i < validOutcomes.length; i++) {
-        const bid2PlacePrice = Math.round((validOutcomes[i].bid1Price - 0.01) * 100) / 100;
+        // 保留原始小数精度，不做四舍五入
+        const bid2PlacePrice = parseFloat((validOutcomes[i].bid1Price - 0.01).toFixed(3));
         orderPrices.push({ ...validOutcomes[i], placePrice: bid2PlacePrice });
       }
 
