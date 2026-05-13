@@ -370,15 +370,15 @@ class MarketMonitor {
         bid2Price = outcomeBidPrice - 0.01;
       }
 
-      // 计算买2与买1的距离 (距离越小=买2越接近买1)
-      const bid2Gap = outcomeBidPrice - bid2Price;
+      // 买1份额(挂单量)
+      const bid1Size = outcomeBid.size || 0;
 
       validOutcomes.push({
         outcome,
         tokenId,
         bid1Price: outcomeBidPrice,
         bid2Price,
-        bid2Gap,
+        bid1Size,
         name: outcome.name || "",
       });
     }
@@ -386,22 +386,22 @@ class MarketMonitor {
     if (validOutcomes.length === 0) return null;
 
     // 决定每个 outcome 的挂单价格
-    // 逻辑: 同一个市场的 Yes 和 No，谁的买2价更接近买1价(gap更小)谁挂买1，另一个挂买2(买1-0.01)
+    // 逻辑: 同一个市场的 Yes 和 No，谁的买1份额更多谁挂买1，另一个挂买2(买1-0.01)
     let orderPrices = [];
 
     if (validOutcomes.length >= 2) {
-      // 按 bid2Gap 升序排序 (gap小的=买2更接近买1)
-      validOutcomes.sort((a, b) => a.bid2Gap - b.bid2Gap);
+      // 按 bid1Size 降序排序 (份额多的排前面)
+      validOutcomes.sort((a, b) => b.bid1Size - a.bid1Size);
 
-      // gap最小的那个挂买1价
+      // 份额最多的挂买1价
       orderPrices.push({ ...validOutcomes[0], placePrice: validOutcomes[0].bid1Price });
-      // 其余的挂买2价 (买1 - 0.01)
+      // 份额少的挂买2价 (买1 - 0.01)
       for (let i = 1; i < validOutcomes.length; i++) {
         const bid2PlacePrice = Math.round((validOutcomes[i].bid1Price - 0.01) * 100) / 100;
         orderPrices.push({ ...validOutcomes[i], placePrice: bid2PlacePrice });
       }
 
-      console.log(`  📊 [${this.marketName}] 挂单决策: ${validOutcomes[0].name}(gap=${validOutcomes[0].bid2Gap.toFixed(3)})→挂买1@${validOutcomes[0].bid1Price.toFixed(2)} | ${validOutcomes[1].name}(gap=${validOutcomes[1].bid2Gap.toFixed(3)})→挂买2@${(validOutcomes[1].bid1Price - 0.01).toFixed(2)}`);
+      console.log(`  📊 [${this.marketName}] 挂单决策: ${validOutcomes[0].name}(份额=${validOutcomes[0].bid1Size.toFixed(0)})→挂买1@${validOutcomes[0].bid1Price.toFixed(2)} | ${validOutcomes[1].name}(份额=${validOutcomes[1].bid1Size.toFixed(0)})→挂买2@${(validOutcomes[1].bid1Price - 0.01).toFixed(2)}`);
     } else {
       // 只有一个有效 outcome，直接挂买1
       orderPrices.push({ ...validOutcomes[0], placePrice: validOutcomes[0].bid1Price });
