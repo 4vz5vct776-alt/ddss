@@ -5,7 +5,9 @@
   "type": "module",
   "scripts": {
     "order": "node batch_order.js",
-    "cancel": "node batch_cancel_js.js"
+    "cancel": "node batch_cancel_js.js",
+    "live": "node live_cancel_monitor.js",
+    "live:test": "node live_cancel_monitor.js test"
   },
   "dependencies": {
     "@predictdotfun/sdk": "latest",
