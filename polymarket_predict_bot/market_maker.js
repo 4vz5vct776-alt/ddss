@@ -414,11 +414,8 @@ class MarketMonitor {
 
     // 执行挂单
     for (const op of orderPrices) {
-      // API要求价格最多2位小数
-      // 检查是否已经是2位小数，如果是就直接用，超过2位才截断
-      const priceStr = String(op.placePrice);
-      const decimalPart = priceStr.includes('.') ? priceStr.split('.')[1] || '' : '';
-      const fixedPrice = decimalPart.length <= 2 ? op.placePrice : Math.floor(op.placePrice * 100) / 100;
+      // 直接用原始价格挂单，保留所有小数精度
+      const fixedPrice = op.placePrice;
       if (fixedPrice <= 0 || isNaN(fixedPrice)) continue;
       if (fixedPrice * CONFIG.ORDER_SIZE < 0.9) continue;
 
