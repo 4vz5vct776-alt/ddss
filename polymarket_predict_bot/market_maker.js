@@ -395,14 +395,14 @@ class MarketMonitor {
 
       // 份额最多的挂买1价
       orderPrices.push({ ...validOutcomes[0], placePrice: validOutcomes[0].bid1Price });
-      // 份额少的挂买2价 (买1 - 0.01，保留原始精度)
+      // 份额少的挂买2价 (使用该outcome的实际买2价格)
       for (let i = 1; i < validOutcomes.length; i++) {
-        // 保留原始小数精度，不做四舍五入
-        const bid2PlacePrice = parseFloat((validOutcomes[i].bid1Price - 0.01).toFixed(3));
+        // 直接用该outcome的实际买2价格挂单
+        const bid2PlacePrice = validOutcomes[i].bid2Price;
         orderPrices.push({ ...validOutcomes[i], placePrice: bid2PlacePrice });
       }
 
-      console.log(`  📊 [${this.marketName}] 挂单决策: ${validOutcomes[0].name}(份额=${validOutcomes[0].bid1Size.toFixed(0)})→挂买1@${validOutcomes[0].bid1Price.toFixed(2)} | ${validOutcomes[1].name}(份额=${validOutcomes[1].bid1Size.toFixed(0)})→挂买2@${(validOutcomes[1].bid1Price - 0.01).toFixed(2)}`);
+      console.log(`  📊 [${this.marketName}] 挂单决策: ${validOutcomes[0].name}(份额=${validOutcomes[0].bid1Size.toFixed(0)})→挂买1@${validOutcomes[0].bid1Price} | ${validOutcomes[1].name}(份额=${validOutcomes[1].bid1Size.toFixed(0)})→挂买2@${validOutcomes[1].bid2Price}`);
     } else {
       // 只有一个有效 outcome，直接挂买1
       orderPrices.push({ ...validOutcomes[0], placePrice: validOutcomes[0].bid1Price });
