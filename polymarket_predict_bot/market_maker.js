@@ -233,7 +233,11 @@ async function getOrderStatus(orderId) {
     const order = data.data || data;
     const status = (order.status || order.state || order.orderStatus || "UNKNOWN").toUpperCase();
     return status;
-  } catch {
+  } catch (e) {
+    // 404 = 订单已不存在 = 被吃了或被系统清除
+    if (e.message && e.message.includes("404")) {
+      return "FILLED";
+    }
     return null;
   }
 }
@@ -682,6 +686,14 @@ async function main() {
       const startsAt = cat.startsAt || cat.startTime || cat.scheduledStartTime || null;
       const endsAt = cat.endsAt || null;
       const now = new Date();
+
+      // 检查 category 本身的状态是否为LIVE/进行中
+      const catStatus = (cat.status || cat.tradingStatus || cat.state || "").toUpperCase();
+      if (catStatus === "LIVE" || catStatus === "IN_PROGRESS" || catStatus === "STARTED" || catStatus === "PLAYING" || cat.isLive === true) {
+        console.log(`  ⏭️ ${label}进行中(状态=${catStatus}): ${cat.title || ""}`);
+        skippedLive++;
+        continue;
+      }
 
       if (startsAt) {
         const startTime = new Date(startsAt);
