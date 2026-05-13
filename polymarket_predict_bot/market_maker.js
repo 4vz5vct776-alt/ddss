@@ -48,7 +48,7 @@ const CONFIG = {
   RECOVER_WAIT: 60000,      // 异动后冷却 60秒(1分钟)，冷却后重新检查买1是否符合条件再挂
 
   // Telegram
-  TELEGRAM_BOT_TOKEN: "8739215233:AAHwG7G60sgOYze9Jo0u-KddtP0UBxDjnKg",
+  TELEGRAM_BOT_TOKEN: "8556016418:AAFy8h77d-WEOJxvDNZz1uqCh1eiNFhVRwE",
   TELEGRAM_CHAT_ID: "5707621530",
 };
 
